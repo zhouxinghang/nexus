@@ -1,0 +1,9 @@
+# dependencies
+web/node_modules/
+
+# Go build artifacts
+server/nexus
+*.test
+
+# env
+.env

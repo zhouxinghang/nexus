@@ -1,0 +1,18 @@
+# Only Postgres runs in a container; the Nexus Go binary runs natively on the
+# Host (ADR-0001). For local development you can point NEXUS_DATABASE_URL at
+# this service.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nexus
+    ports:
+      - "5432:5432"
+    volumes:
+      - nexus_pgdata:/var/lib/postgresql/data
+
+volumes:
+  nexus_pgdata:

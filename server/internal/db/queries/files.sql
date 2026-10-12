@@ -1,0 +1,89 @@
+-- name: CreateManagedRoot :one
+INSERT INTO managed_roots (path)
+VALUES ($1)
+RETURNING *;
+
+-- name: ListManagedRoots :many
+SELECT * FROM managed_roots
+ORDER BY created_at ASC, id ASC;
+
+-- name: GetManagedRoot :one
+SELECT * FROM managed_roots WHERE id = $1;
+
+-- name: DeleteManagedRoot :exec
+DELETE FROM managed_roots WHERE id = $1;
+
+-- name: UpsertResource :one
+INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, state, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, 'present', now())
+ON CONFLICT (path) DO UPDATE
+SET root_id     = EXCLUDED.root_id,
+    name        = EXCLUDED.name,
+    size        = EXCLUDED.size,
+    is_dir      = EXCLUDED.is_dir,
+    modified_at = EXCLUDED.modified_at,
+    state       = 'present',
+    updated_at  = now()
+RETURNING *;
+
+-- name: GetResource :one
+SELECT * FROM resources WHERE id = $1;
+
+-- name: GetResourceByPath :one
+SELECT * FROM resources WHERE path = $1;
+
+-- name: ListResources :many
+SELECT * FROM resources
+ORDER BY path ASC;
+
+-- name: ListResourcesByRoot :many
+SELECT * FROM resources
+WHERE root_id = $1
+ORDER BY path ASC;
+
+-- name: ListResourceIDsByRoot :many
+SELECT id, path FROM resources
+WHERE root_id = $1;
+
+-- name: MarkResourceMissing :exec
+UPDATE resources
+SET state = 'missing', updated_at = now()
+WHERE id = $1;
+
+-- name: DeleteResource :exec
+DELETE FROM resources WHERE id = $1;
+
+-- name: UpdateResourceNote :one
+UPDATE resources
+SET note = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateResourcePath :one
+UPDATE resources
+SET path = $2, name = $3, root_id = $4, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: AddResourceTag :exec
+INSERT INTO resource_tags (resource_id, tag)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING;
+
+-- name: RemoveResourceTag :exec
+DELETE FROM resource_tags WHERE resource_id = $1 AND tag = $2;
+
+-- name: ListTagsForResource :many
+SELECT tag FROM resource_tags WHERE resource_id = $1 ORDER BY tag ASC;
+
+-- name: ListResourceIDsByTag :many
+SELECT resource_id FROM resource_tags WHERE tag = $1;
+
+-- name: InsertAuditLog :one
+INSERT INTO file_audit_log (action, resource_id, old_path, new_path)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: ListAuditLog :many
+SELECT * FROM file_audit_log
+ORDER BY created_at DESC, id DESC;
