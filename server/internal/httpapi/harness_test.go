@@ -17,6 +17,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"nexus/internal/auth"
+	"nexus/internal/checker"
 	"nexus/internal/db"
 	"nexus/internal/host"
 	"nexus/internal/httpapi"
@@ -41,6 +42,7 @@ type harness struct {
 	server  *httpapi.Server
 	ts      *httptest.Server
 	host    *host.FakeHost
+	prober  *checker.FakeProber
 	cookie  *http.Cookie
 	dbName  string
 	adminDB *pgxpool.Pool
@@ -88,7 +90,8 @@ func newHarness(t *testing.T) *harness {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(testPassword), bcrypt.DefaultCost)
 	authn := auth.New(string(hash), []byte("test-signing-key"))
 	fakeHost := host.NewFakeHost()
-	srv := httpapi.NewServer(pool, authn, fakeHost)
+	fakeProber := checker.NewFakeProber()
+	srv := httpapi.NewServer(pool, authn, fakeHost, fakeProber)
 
 	ts := httptest.NewServer(srv.Router(nil))
 
@@ -97,6 +100,7 @@ func newHarness(t *testing.T) *harness {
 		server:  srv,
 		ts:      ts,
 		host:    fakeHost,
+		prober:  fakeProber,
 		dbName:  dbName,
 		adminDB: admin,
 		pool:    pool,

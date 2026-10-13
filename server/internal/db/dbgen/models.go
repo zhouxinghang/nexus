@@ -12,6 +12,49 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type BookmarkHealth string
+
+const (
+	BookmarkHealthUnknown BookmarkHealth = "unknown"
+	BookmarkHealthUp      BookmarkHealth = "up"
+	BookmarkHealthDown    BookmarkHealth = "down"
+)
+
+func (e *BookmarkHealth) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BookmarkHealth(s)
+	case string:
+		*e = BookmarkHealth(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BookmarkHealth: %T", src)
+	}
+	return nil
+}
+
+type NullBookmarkHealth struct {
+	BookmarkHealth BookmarkHealth `json:"bookmark_health"`
+	Valid          bool           `json:"valid"` // Valid is true if BookmarkHealth is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBookmarkHealth) Scan(value interface{}) error {
+	if value == nil {
+		ns.BookmarkHealth, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BookmarkHealth.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBookmarkHealth) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BookmarkHealth), nil
+}
+
 type ResourceState string
 
 const (
@@ -140,6 +183,19 @@ func (ns NullTaskStatus) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.TaskStatus), nil
+}
+
+type Bookmark struct {
+	ID            int64          `json:"id"`
+	Name          string         `json:"name"`
+	Url           string         `json:"url"`
+	Icon          string         `json:"icon"`
+	Health        BookmarkHealth `json:"health"`
+	LastStatus    pgtype.Int4    `json:"last_status"`
+	LastLatencyMs pgtype.Int8    `json:"last_latency_ms"`
+	LastCheckedAt *time.Time     `json:"last_checked_at"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 type FileAuditLog struct {

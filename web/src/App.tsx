@@ -6,6 +6,7 @@ import Files from "@/pages/Files";
 import Servers from "@/pages/Servers";
 import Tasks from "@/pages/Tasks";
 import Journal from "@/pages/Journal";
+import Bookmarks from "@/pages/Bookmarks";
 
 function Protected({ children }: { children: React.ReactNode }) {
   const { authenticated, loading } = useAuth();
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="/servers" element={<Servers />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/journal" element={<Journal />} />
+          <Route path="/bookmarks" element={<Bookmarks />} />
         </Route>
         <Route path="*" element={<Navigate to="/files" replace />} />
       </Routes>

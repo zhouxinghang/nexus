@@ -26,3 +26,8 @@ func (s *Server) InsertAgedSampleForTest(ctx context.Context, daysAgo int) error
 		daysAgo)
 	return err
 }
+
+// CheckBookmarksForTest runs a full bookmark health-check sweep synchronously.
+func (s *Server) CheckBookmarksForTest(ctx context.Context) error {
+	return s.checker.CheckAll(ctx)
+}

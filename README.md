@@ -1,7 +1,8 @@
 # Nexus
 
 Single-user personal workbench: one native Go process serving a React UI and a
-JSON API over its own host, with four tools — Files, Servers, Tasks, Journal.
+JSON API over its own host, with five tools — Files, Servers, Tasks, Journal,
+Bookmarks.
 
 See `.scratch/nexus-v1/spec.md` for the full spec and `CONTEXT.md` for the
 domain vocabulary.

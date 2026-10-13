@@ -1,8 +1,8 @@
 # Nexus
 
 Single-user personal workbench: one native Go process serving a React UI and a
-JSON API over its own host, with four tools — file resource management, host
-monitoring, task tracking, and a journal.
+JSON API over its own host, with five tools — file resource management, host
+monitoring, task tracking, a journal, and a website-navigation board.
 
 ## Agent skills
 

@@ -8,6 +8,7 @@ import {
   Server,
   CheckSquare,
   BookText,
+  Compass,
   LogOut,
   Hexagon,
   Moon,
@@ -24,6 +25,7 @@ const nav = [
   { to: "/servers", label: "Servers", icon: Server, hint: "Host vitals" },
   { to: "/tasks", label: "Tasks", icon: CheckSquare, hint: "Board" },
   { to: "/journal", label: "Journal", icon: BookText, hint: "Log" },
+  { to: "/bookmarks", label: "Bookmarks", icon: Compass, hint: "Sites" },
 ];
 
 function ThemeToggle() {

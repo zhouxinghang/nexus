@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"nexus/internal/auth"
+	"nexus/internal/checker"
 	"nexus/internal/config"
 	"nexus/internal/db"
 	"nexus/internal/host"
@@ -42,10 +43,13 @@ func main() {
 
 	authn := auth.New(cfg.PasswordHash, cfg.JWTSigningKey)
 	realHost := host.NewRealHost()
-	srv := httpapi.NewServer(pool, authn, realHost)
+	srv := httpapi.NewServer(pool, authn, realHost, checker.NewHTTPProber())
 
 	// Start the background sampler.
 	go srv.Sampler().Run(ctx)
+
+	// Start the background bookmark health checker.
+	go srv.Checker().Run(ctx)
 
 	handler := srv.Router(web.Handler())
 

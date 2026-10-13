@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"nexus/internal/auth"
+	"nexus/internal/checker"
 	"nexus/internal/db/dbgen"
 	"nexus/internal/host"
 	"nexus/internal/sampler"
@@ -24,10 +25,11 @@ type Server struct {
 	auth    *auth.Authenticator
 	host    host.Host
 	sampler *sampler.Sampler
+	checker *checker.Checker
 }
 
 // NewServer builds a Server from its dependencies.
-func NewServer(pool *pgxpool.Pool, authn *auth.Authenticator, h host.Host) *Server {
+func NewServer(pool *pgxpool.Pool, authn *auth.Authenticator, h host.Host, prober checker.Prober) *Server {
 	queries := dbgen.New(pool)
 	return &Server{
 		pool:    pool,
@@ -35,11 +37,16 @@ func NewServer(pool *pgxpool.Pool, authn *auth.Authenticator, h host.Host) *Serv
 		auth:    authn,
 		host:    h,
 		sampler: sampler.New(queries, h),
+		checker: checker.New(queries, prober),
 	}
 }
 
 // Sampler exposes the background sampler so callers (main, tests) can run it.
 func (s *Server) Sampler() *sampler.Sampler { return s.sampler }
+
+// Checker exposes the background bookmark health checker so callers (main,
+// tests) can run it.
+func (s *Server) Checker() *checker.Checker { return s.checker }
 
 // Router returns the fully-wired http.Handler: the SPA, the public login
 // endpoint, and the authenticated API under /api.
@@ -62,6 +69,7 @@ func (s *Server) Router(spa http.Handler) http.Handler {
 			s.registerTaskRoutes(pr)
 			s.registerServerRoutes(pr)
 			s.registerFileRoutes(pr)
+			s.registerBookmarkRoutes(pr)
 		})
 	})
 

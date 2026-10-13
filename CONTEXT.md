@@ -1,9 +1,9 @@
 # Nexus
 
 Nexus is a single-user personal workbench. It runs as one native Go process on a
-host machine, serving a React UI and a JSON API, and gives its owner four tools
-over that same host: a resource library, host monitoring, task tracking, and a
-journal.
+host machine, serving a React UI and a JSON API, and gives its owner five tools
+over that same host: a resource library, host monitoring, task tracking, a
+journal, and a website-navigation board.
 
 ## Language
 
@@ -62,3 +62,20 @@ An append-only, immutable, plain-text record stamped with its creation time.
 Cannot be edited or deleted. Searchable by case-insensitive substring match
 (works for Chinese and other non-space-delimited text; see ADR-0004).
 _Avoid_: note, log, post, entry
+
+### Bookmarks
+
+**Bookmark**:
+One entry on the website-navigation board: an Owner-given name, a clickable
+external http(s) link, and an optional icon (emoji, image URL, or a favicon
+fallback derived from the link's host). Unlike a Resource, a Bookmark points at
+an external site, not a local file — this is the one place external URLs live,
+and it keeps the Files module local-only (see ADR-0002, ADR-0005).
+_Avoid_: link, favorite, shortcut, resource
+
+**Health** (bookmark state):
+The reachability of a Bookmark's site, recorded by a periodic health check:
+`up` (last probe got an HTTP status below 500), `down` (the probe failed or
+returned 5xx), or `unknown` (never checked yet). Each check also stores the last
+status code, latency, and check time.
+_Avoid_: status, uptime, ping
