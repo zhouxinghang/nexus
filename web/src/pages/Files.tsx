@@ -13,6 +13,14 @@ import {
 import { cn } from "@/lib/api";
 import {
   FileText,
+  FileImage,
+  FileVideo,
+  FileAudio,
+  FileSpreadsheet,
+  FileCode,
+  FileArchive,
+  File,
+  Presentation,
   FolderPlus,
   RefreshCw,
   Trash2,
@@ -22,6 +30,7 @@ import {
   Folder,
   AlertTriangle,
   Search,
+  type LucideIcon,
 } from "lucide-react";
 
 type Root = { id: number; path: string };
@@ -49,15 +58,143 @@ function bytes(n: number): string {
   return `${v.toFixed(0)} ${units[i]}`;
 }
 
+// A compact, human modified-date: time today, "Yesterday", a weekday this week,
+// "Mon D" this year, else "Mon D, YYYY" — so the column scans at a glance.
+function modified(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const now = new Date();
+  const startOfDay = (t: Date) =>
+    new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(now) - startOfDay(d)) / 86400000);
+  if (dayDiff === 0)
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (dayDiff === 1) return "Yesterday";
+  if (dayDiff > 1 && dayDiff < 7)
+    return d.toLocaleDateString(undefined, { weekday: "short" });
+  if (d.getFullYear() === now.getFullYear())
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+/* --------------------------------------------------- File-type filtering */
+
+// A small, Finder/Drive-style taxonomy. Resources carry no mime type from the
+// Host, so we classify client-side by directory flag + lowercase extension.
+type FileKind =
+  | "folder"
+  | "document"
+  | "image"
+  | "video"
+  | "audio"
+  | "spreadsheet"
+  | "presentation"
+  | "code"
+  | "archive"
+  | "other";
+
+// Extensions per kind. Order of the `kinds` array below drives the filter order
+// and the fallback is "other".
+const kindExtensions: Record<Exclude<FileKind, "folder" | "other">, string[]> = {
+  document: ["pdf", "doc", "docx", "txt", "md", "markdown", "rtf", "odt", "pages", "tex", "epub"],
+  image: ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "heic", "heif", "tiff", "tif", "avif"],
+  video: ["mp4", "mov", "avi", "mkv", "webm", "flv", "wmv", "m4v", "mpeg", "mpg", "3gp"],
+  audio: ["mp3", "wav", "flac", "aac", "ogg", "oga", "m4a", "wma", "opus", "aiff"],
+  spreadsheet: ["xls", "xlsx", "csv", "tsv", "ods", "numbers"],
+  presentation: ["ppt", "pptx", "odp", "key"],
+  code: [
+    "js", "jsx", "ts", "tsx", "go", "py", "rb", "php", "java", "kt", "c", "h", "cc",
+    "cpp", "hpp", "cs", "rs", "swift", "sh", "bash", "zsh", "html", "htm", "css",
+    "scss", "sass", "less", "json", "yaml", "yml", "toml", "xml", "sql", "vue",
+    "svelte", "lua", "pl", "r", "dart", "gradle", "ini", "conf", "env",
+  ],
+  archive: ["zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "7z", "zst", "lz", "lzma"],
+};
+
+const extToKind = new Map<string, FileKind>();
+for (const [kind, exts] of Object.entries(kindExtensions)) {
+  for (const ext of exts) extToKind.set(ext, kind as FileKind);
+}
+
+// Extension-less filenames that still read as code/config.
+const nameToKind: Record<string, FileKind> = {
+  dockerfile: "code",
+  makefile: "code",
+  rakefile: "code",
+};
+
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return ""; // no extension, or a dotfile like ".env"
+  return name.slice(dot + 1).toLowerCase();
+}
+
+function classify(r: Resource): FileKind {
+  if (r.is_dir) return "folder";
+  const named = nameToKind[r.name.toLowerCase()];
+  if (named) return named;
+  return extToKind.get(extensionOf(r.name)) ?? "other";
+}
+
+// Display metadata per kind. Array order == filter order. `chip` is the tinted
+// icon-chip (bg + fg) used everywhere a file icon appears, so a file's type is
+// legible at a glance in both light and dark themes.
+const kinds: { key: FileKind; label: string; icon: LucideIcon; chip: string }[] = [
+  { key: "folder", label: "Folders", icon: Folder, chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
+  { key: "document", label: "Documents", icon: FileText, chip: "bg-blue-500/15 text-blue-600 dark:text-blue-400" },
+  { key: "image", label: "Images", icon: FileImage, chip: "bg-violet-500/15 text-violet-600 dark:text-violet-400" },
+  { key: "video", label: "Videos", icon: FileVideo, chip: "bg-rose-500/15 text-rose-600 dark:text-rose-400" },
+  { key: "audio", label: "Audio", icon: FileAudio, chip: "bg-pink-500/15 text-pink-600 dark:text-pink-400" },
+  { key: "spreadsheet", label: "Spreadsheets", icon: FileSpreadsheet, chip: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
+  { key: "presentation", label: "Presentations", icon: Presentation, chip: "bg-orange-500/15 text-orange-600 dark:text-orange-400" },
+  { key: "code", label: "Code", icon: FileCode, chip: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400" },
+  { key: "archive", label: "Archives", icon: FileArchive, chip: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-500" },
+  { key: "other", label: "Other", icon: File, chip: "bg-muted text-muted-foreground" },
+];
+
+const kindMeta = (k: FileKind) => kinds.find((x) => x.key === k) ?? kinds[kinds.length - 1];
+
+// The directory a resource lives in (its absolute path minus the file name),
+// shown as a subtle second line so same-named files in different folders are
+// distinguishable.
+function parentDir(r: Resource): string {
+  const trimmed = r.path.endsWith("/") ? r.path.slice(0, -1) : r.path;
+  const cut = trimmed.length - r.name.length - 1;
+  if (cut <= 0) return "";
+  return trimmed.slice(0, cut);
+}
+
 export default function Files() {
   const [roots, setRoots] = useState<Root[]>([]);
   const [resources, setResources] = useState<Resource[]>([]);
   const [newRoot, setNewRoot] = useState("");
   const [rootFilter, setRootFilter] = useState<number | "">("");
   const [tagFilter, setTagFilter] = useState("");
+  const [kindFilter, setKindFilter] = useState<FileKind | "all">("all");
   const [selected, setSelected] = useState<Resource | null>(null);
   const [error, setError] = useState("");
   const [scanning, setScanning] = useState<number | null>(null);
+
+  // Resources after applying the file-type filter (root/tag filters are applied
+  // server-side; the kind filter is client-side since the Host sends no type).
+  function visible(): Resource[] {
+    if (kindFilter === "all") return resources;
+    return resources.filter((r) => classify(r) === kindFilter);
+  }
+
+  // How many resources fall into each kind, for the filter chip counts.
+  function kindCounts(): Map<FileKind, number> {
+    const counts = new Map<FileKind, number>();
+    for (const r of resources) {
+      const k = classify(r);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    return counts;
+  }
 
   async function loadRoots() {
     setRoots(await api.get<Root[]>("/api/files/roots"));
@@ -214,6 +351,28 @@ export default function Files() {
       </Card>
 
       <div className="flex flex-wrap items-center gap-2">
+        <div className="relative max-w-xs flex-1">
+          <Search
+            size={15}
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            className="pl-9"
+            placeholder="Filter by tag…"
+            value={tagFilter}
+            onChange={(e) => setTagFilter(e.target.value)}
+          />
+          {tagFilter && (
+            <button
+              type="button"
+              onClick={() => setTagFilter("")}
+              aria-label="Clear tag filter"
+              className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
         <Select
           value={rootFilter}
           onChange={(e) =>
@@ -227,80 +386,96 @@ export default function Files() {
             </option>
           ))}
         </Select>
-        <div className="relative max-w-xs flex-1">
-          <Search
-            size={15}
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            className="pl-9"
-            placeholder="Filter by tag…"
-            value={tagFilter}
-            onChange={(e) => setTagFilter(e.target.value)}
-          />
-        </div>
       </div>
+
+      {resources.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs font-medium text-muted-foreground">
+            Type:
+          </span>
+          <TypeChip
+            active={kindFilter === "all"}
+            onClick={() => setKindFilter("all")}
+            count={resources.length}
+          >
+            All
+          </TypeChip>
+          {(() => {
+            const counts = kindCounts();
+            return kinds.map((k) => {
+              const count = counts.get(k.key) ?? 0;
+              if (count === 0) return null;
+              const Icon = k.icon;
+              return (
+                <TypeChip
+                  key={k.key}
+                  active={kindFilter === k.key}
+                  onClick={() => setKindFilter(k.key)}
+                  count={count}
+                  icon={<Icon size={13} />}
+                >
+                  {k.label}
+                </TypeChip>
+              );
+            });
+          })()}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="overflow-hidden p-0 lg:col-span-2">
-          {resources.length === 0 ? (
+          {visible().length === 0 ? (
             <EmptyState
-              icon={FileText}
-              title="No resources"
-              description="Add a Managed Root above and scan it to index its files."
+              icon={Search}
+              title="No matches"
+              description={
+                resources.length === 0
+                  ? "Add a Managed Root above and scan it to index its files."
+                  : "No Resources match the current filters. Try clearing them."
+              }
+              action={
+                resources.length > 0 ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setTagFilter("");
+                      setRootFilter("");
+                      setKindFilter("all");
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                ) : undefined
+              }
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full border-separate border-spacing-0 text-sm">
                 <thead>
-                  <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
-                    <th className="p-3 font-medium">Name</th>
-                    <th className="p-3 font-medium">Size</th>
-                    <th className="p-3 font-medium">Modified</th>
-                    <th className="p-3 font-medium">Tags</th>
+                  <tr className="text-left text-xs text-muted-foreground">
+                    <th className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur">
+                      Name
+                    </th>
+                    <th className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-2.5 text-right font-medium backdrop-blur">
+                      Size
+                    </th>
+                    <th className="sticky top-0 z-10 hidden border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur sm:table-cell">
+                      Modified
+                    </th>
+                    <th className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur">
+                      Tags
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {resources.map((r) => (
-                    <tr
+                  {visible().map((r) => (
+                    <ResourceRow
                       key={r.id}
-                      onClick={() => setSelected(r)}
-                      className={cn(
-                        "cursor-pointer border-b border-border/60 transition-colors last:border-0 hover:bg-muted/50",
-                        selected?.id === r.id && "bg-accent/50",
-                        r.state === "missing" && "opacity-50",
-                      )}
-                    >
-                      <td className="p-3">
-                        <div className="flex items-center gap-2">
-                          <FileText
-                            size={15}
-                            className="shrink-0 text-muted-foreground"
-                          />
-                          <span className="truncate font-medium">{r.name}</span>
-                          {r.state === "missing" && (
-                            <Badge variant="destructive">missing</Badge>
-                          )}
-                        </div>
-                      </td>
-                      <td className="p-3 tabular-nums text-muted-foreground">
-                        {bytes(r.size)}
-                      </td>
-                      <td className="p-3 text-muted-foreground">
-                        {r.modified_at
-                          ? new Date(r.modified_at).toLocaleDateString()
-                          : "—"}
-                      </td>
-                      <td className="p-3">
-                        <div className="flex flex-wrap gap-1">
-                          {r.tags.map((t) => (
-                            <Badge key={t} variant="primary">
-                              {t}
-                            </Badge>
-                          ))}
-                        </div>
-                      </td>
-                    </tr>
+                      resource={r}
+                      selected={selected?.id === r.id}
+                      onSelect={setSelected}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -324,6 +499,127 @@ export default function Files() {
         )}
       </div>
     </div>
+  );
+}
+
+// A single file-type filter chip: optional leading icon, label, and a count.
+function TypeChip({
+  active,
+  onClick,
+  count,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  count: number;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+        active
+          ? "border-transparent bg-primary text-primary-foreground"
+          : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
+      )}
+    >
+      {icon}
+      {children}
+      <span
+        className={cn(
+          "tabular-nums",
+          active ? "text-primary-foreground/70" : "text-muted-foreground/70",
+        )}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+// One file row in the table. A tinted type-chip plus the parent directory make
+// each entry scannable and disambiguate same-named files across folders.
+function ResourceRow({
+  resource,
+  selected,
+  onSelect,
+}: {
+  resource: Resource;
+  selected: boolean;
+  onSelect: (r: Resource) => void;
+}) {
+  const meta = kindMeta(classify(resource));
+  const Icon = meta.icon;
+  const dir = parentDir(resource);
+  return (
+    <tr
+      onClick={() => onSelect(resource)}
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(resource);
+        }
+      }}
+      className={cn(
+        "group cursor-pointer outline-none transition-colors",
+        selected ? "bg-accent/60" : "hover:bg-muted/50 focus-visible:bg-muted/50",
+        resource.state === "missing" && "opacity-60",
+      )}
+    >
+      <td
+        className={cn(
+          "border-b border-border/60 px-4 py-2.5",
+          selected && "border-l-2 border-l-primary pl-[14px]",
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <span
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+              meta.chip,
+            )}
+          >
+            <Icon size={16} />
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="truncate font-medium text-foreground">
+                {resource.name}
+              </span>
+              {resource.state === "missing" && (
+                <Badge variant="destructive">missing</Badge>
+              )}
+            </div>
+            {dir && (
+              <span className="block truncate font-mono text-xs text-muted-foreground">
+                {dir}
+              </span>
+            )}
+          </div>
+        </div>
+      </td>
+      <td className="border-b border-border/60 px-4 py-2.5 text-right tabular-nums text-muted-foreground">
+        {resource.is_dir ? "—" : bytes(resource.size)}
+      </td>
+      <td className="hidden border-b border-border/60 px-4 py-2.5 tabular-nums text-muted-foreground sm:table-cell">
+        {modified(resource.modified_at)}
+      </td>
+      <td className="border-b border-border/60 px-4 py-2.5">
+        <div className="flex flex-wrap gap-1">
+          {resource.tags.map((t) => (
+            <Badge key={t} variant="primary">
+              {t}
+            </Badge>
+          ))}
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -352,12 +648,21 @@ function Detail({
   const [note, setNote] = useState(resource.note);
   const [name, setName] = useState(resource.name);
   const [dest, setDest] = useState("");
+  const meta = kindMeta(classify(resource));
+  const Icon = meta.icon;
 
   return (
     <Card className="h-fit animate-scale-in space-y-4 p-4 lg:sticky lg:top-8">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <FileText size={16} className="shrink-0 text-muted-foreground" />
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            className={cn(
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-md",
+              meta.chip,
+            )}
+          >
+            <Icon size={18} />
+          </span>
           <h2 className="truncate font-semibold">{resource.name}</h2>
         </div>
         <Button size="icon-sm" variant="ghost" aria-label="Close" onClick={onClose}>
