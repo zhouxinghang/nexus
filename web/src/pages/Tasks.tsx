@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { Button, Card, Input, Badge } from "@/components/ui";
+import {
+  Button,
+  Card,
+  Input,
+  Badge,
+  Select,
+  PageHeader,
+  EmptyState,
+} from "@/components/ui";
 import { cn } from "@/lib/api";
+import { CheckSquare, Plus, Trash2, CalendarClock } from "lucide-react";
 
 type Task = {
   id: number;
@@ -13,10 +22,14 @@ type Task = {
 };
 type Project = { id: number; name: string };
 
-const columns: { key: Task["status"]; label: string }[] = [
-  { key: "todo", label: "Todo" },
-  { key: "doing", label: "Doing" },
-  { key: "done", label: "Done" },
+const columns: {
+  key: Task["status"];
+  label: string;
+  dot: string;
+}[] = [
+  { key: "todo", label: "Todo", dot: "bg-muted-foreground" },
+  { key: "doing", label: "Doing", dot: "bg-warning" },
+  { key: "done", label: "Done", dot: "bg-success" },
 ];
 
 function dueClass(due: string | null): string {
@@ -24,8 +37,8 @@ function dueClass(due: string | null): string {
   const d = new Date(due).getTime();
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
-  if (d < now) return "text-destructive font-medium";
-  if (d - now < 2 * day) return "text-amber-600 font-medium";
+  if (d < now) return "text-destructive";
+  if (d - now < 2 * day) return "text-warning";
   return "text-muted-foreground";
 }
 
@@ -130,9 +143,7 @@ export default function Tasks() {
     ids.splice(index, 0, id);
 
     // Optimistic: reassign status/position locally so the board doesn't flash.
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, status } : t)),
-    );
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
 
     const updated = await api.post<Task[]>("/api/tasks/reorder", { status, ids });
     setTasks(updated);
@@ -140,24 +151,25 @@ export default function Tasks() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Tasks</h1>
-        <p className="text-sm text-muted-foreground">
-          A three-column board. Drag cards between columns or reorder within one.
-        </p>
-      </div>
+      <PageHeader
+        icon={CheckSquare}
+        title="Tasks"
+        description="A three-column board. Drag cards between columns or reorder within one."
+      />
 
-      <div className="flex flex-wrap gap-2">
-        <form onSubmit={create} className="flex flex-1 gap-2">
+      <Card className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center">
+        <form onSubmit={create} className="flex flex-1 flex-wrap gap-2">
           <Input
+            className="min-w-[12rem] flex-1"
             placeholder="New task title…"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
-          <select
-            className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+          <Select
             value={projectId}
-            onChange={(e) => setProjectId(e.target.value === "" ? "" : Number(e.target.value))}
+            onChange={(e) =>
+              setProjectId(e.target.value === "" ? "" : Number(e.target.value))
+            }
           >
             <option value="">No project</option>
             {projects.map((p) => (
@@ -165,39 +177,57 @@ export default function Tasks() {
                 {p.name}
               </option>
             ))}
-          </select>
-          <Button type="submit">Add</Button>
+          </Select>
+          <Button type="submit" disabled={!title.trim()}>
+            <Plus size={15} /> Add
+          </Button>
         </form>
+        <div className="hidden w-px self-stretch bg-border lg:block" />
         <form onSubmit={addProject} className="flex gap-2">
           <Input
+            className="w-40"
             placeholder="New project…"
             value={newProject}
             onChange={(e) => setNewProject(e.target.value)}
           />
-          <Button variant="outline" type="submit">
+          <Button variant="outline" type="submit" disabled={!newProject.trim()}>
             Add project
           </Button>
         </form>
-      </div>
+      </Card>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {columns.map((col) => {
           const items = column(col.key);
           const showEndMarker =
             dropTarget?.status === col.key && dropTarget.index >= items.length;
+          const isTarget = dropTarget?.status === col.key;
           return (
             <div
               key={col.key}
               onDragOver={(e) => onColumnDragOver(e, col.key)}
               onDrop={() => onDrop(col.key)}
               className={cn(
-                "flex min-h-[8rem] flex-col gap-3 rounded-lg border border-dashed border-transparent p-1 transition",
-                dropTarget?.status === col.key && "border-primary/40 bg-muted/40",
+                "flex min-h-[12rem] flex-col gap-3 rounded-lg border p-3 transition-colors",
+                isTarget
+                  ? "border-primary/40 bg-accent/40"
+                  : "border-border bg-muted/30",
               )}
             >
-              <h2 className="px-1 text-sm font-semibold uppercase text-muted-foreground">
-                {col.label}
-              </h2>
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-2">
+                  <span className={cn("h-2 w-2 rounded-full", col.dot)} />
+                  <h2 className="text-sm font-semibold">{col.label}</h2>
+                </div>
+                <Badge>{items.length}</Badge>
+              </div>
+
+              {items.length === 0 && !isTarget && (
+                <p className="px-1 py-6 text-center text-xs text-muted-foreground">
+                  Nothing here.
+                </p>
+              )}
+
               {items.map((t, i) => (
                 <div key={t.id}>
                   {dropTarget?.status === col.key && dropTarget.index === i && (
@@ -209,43 +239,49 @@ export default function Tasks() {
                     onDragEnd={onDragEnd}
                     onDragOver={(e) => onCardDragOver(e, col.key, i)}
                     className={cn(
-                      "cursor-grab space-y-2 p-3 active:cursor-grabbing",
-                      dragging === t.id && "opacity-50",
+                      "group cursor-grab space-y-2 p-3 transition active:cursor-grabbing hover:border-primary/30",
+                      dragging === t.id && "opacity-50 ring-2 ring-primary/40",
                     )}
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <span className="text-sm font-medium">{t.title}</span>
+                      <span className="text-sm font-medium leading-snug">
+                        {t.title}
+                      </span>
                       <Button
                         variant="ghost"
-                        size="sm"
+                        size="icon-sm"
                         onClick={() => remove(t.id)}
-                        className="text-destructive"
+                        aria-label="Delete task"
+                        className="shrink-0 text-muted-foreground opacity-0 transition hover:text-destructive group-hover:opacity-100"
                       >
-                        ✕
+                        <Trash2 size={14} />
                       </Button>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       {projectName(t.project_id) && (
-                        <Badge>{projectName(t.project_id)}</Badge>
+                        <Badge variant="primary">{projectName(t.project_id)}</Badge>
                       )}
-                      <input
-                        type="date"
-                        className="h-7 rounded border border-border bg-background px-1 text-xs"
-                        value={t.due_at ? t.due_at.slice(0, 10) : ""}
-                        onChange={(e) =>
-                          patch(t.id, {
-                            due_at: e.target.value
-                              ? new Date(e.target.value).toISOString()
-                              : null,
-                          } as Partial<Task>)
-                        }
-                      />
+                      <label
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-xs",
+                          dueClass(t.due_at),
+                        )}
+                      >
+                        <CalendarClock size={12} />
+                        <input
+                          type="date"
+                          className="bg-transparent text-xs outline-none"
+                          value={t.due_at ? t.due_at.slice(0, 10) : ""}
+                          onChange={(e) =>
+                            patch(t.id, {
+                              due_at: e.target.value
+                                ? new Date(e.target.value).toISOString()
+                                : null,
+                            } as Partial<Task>)
+                          }
+                        />
+                      </label>
                     </div>
-                    {t.due_at && (
-                      <div className={cn("text-xs", dueClass(t.due_at))}>
-                        Due {new Date(t.due_at).toLocaleDateString()}
-                      </div>
-                    )}
                   </Card>
                 </div>
               ))}
@@ -254,6 +290,14 @@ export default function Tasks() {
           );
         })}
       </div>
+
+      {tasks.length === 0 && (
+        <EmptyState
+          icon={CheckSquare}
+          title="No tasks yet"
+          description="Add your first task above to start the board."
+        />
+      )}
     </div>
   );
 }

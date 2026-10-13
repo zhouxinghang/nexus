@@ -1,15 +1,139 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: light;
+/*
+ * Design tokens. One semantic layer in HSL channels so Tailwind utilities can
+ * compose them (hsl(var(--token) / <alpha>)). Light is the default; `.dark` on
+ * <html> flips the whole palette. Brand is teal, with amber reserved for the
+ * single high-emphasis call to action.
+ */
+@layer base {
+  :root {
+    --background: 210 40% 99%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 89%;
+
+    --primary: 175 77% 31%;
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 174 52% 94%;
+    --accent-foreground: 175 72% 24%;
+
+    --cta: 21 90% 48%;
+    --cta-foreground: 0 0% 100%;
+
+    --success: 142 68% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 94% 44%;
+    --warning-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --ring: 175 77% 36%;
+
+    --radius: 0.65rem;
+  }
+
+  .dark {
+    --background: 222 47% 7%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 39% 11%;
+    --card-foreground: 210 40% 96%;
+
+    --muted: 217 33% 16%;
+    --muted-foreground: 216 18% 64%;
+
+    --border: 217 30% 20%;
+    --input: 217 30% 24%;
+
+    --primary: 172 66% 46%;
+    --primary-foreground: 222 47% 8%;
+
+    --accent: 216 34% 17%;
+    --accent-foreground: 172 66% 62%;
+
+    --cta: 21 90% 55%;
+    --cta-foreground: 222 47% 8%;
+
+    --success: 142 58% 48%;
+    --success-foreground: 222 47% 8%;
+    --warning: 38 92% 55%;
+    --warning-foreground: 222 47% 8%;
+    --destructive: 0 63% 55%;
+    --destructive-foreground: 222 47% 8%;
+
+    --ring: 172 66% 52%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+      Roboto, Helvetica, Arial, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* A single consistent focus ring for keyboard users across the app. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.22);
+  }
+
+  /* Thin, theme-aware scrollbars so dense dashboards stay calm. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+    background-clip: content-box;
+  }
 }
 
-body {
-  margin: 0;
-  background: hsl(210 40% 98%);
-  color: hsl(222 47% 11%);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
