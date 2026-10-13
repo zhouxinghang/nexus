@@ -21,6 +21,9 @@ import {
   AlignLeft,
   GripVertical,
   Pencil,
+  Columns3,
+  Folder,
+  Type,
 } from "lucide-react";
 
 type Priority = "none" | "low" | "medium" | "high" | "urgent";
@@ -354,7 +357,7 @@ export default function Tasks() {
                       onDragOver={(e) => onCardDragOver(e, col.key, i)}
                       onClick={() => openEditor(t)}
                       className={cn(
-                        "group relative cursor-pointer space-y-2 overflow-hidden p-3 pl-3.5 transition hover:border-primary/30 hover:shadow-pop",
+                        "group relative cursor-pointer space-y-1 overflow-hidden px-3 py-2.5 pl-3.5 transition hover:border-primary/30 hover:shadow-pop",
                         dragging === t.id && "opacity-50 ring-2 ring-primary/40",
                       )}
                     >
@@ -367,36 +370,34 @@ export default function Tasks() {
                           aria-hidden
                         />
                       )}
-                      <div className="flex items-start justify-between gap-2">
-                        <span
-                          className={cn(
-                            "text-sm font-medium leading-snug",
-                            t.status === "done" &&
-                              "text-muted-foreground line-through",
-                          )}
+                      <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
+                        <GripVertical
+                          size={14}
+                          className="cursor-grab text-muted-foreground/40 opacity-0 transition group-hover:opacity-100"
+                          aria-hidden
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            remove(t.id);
+                          }}
+                          aria-label="Delete task"
+                          className="h-6 w-6 text-muted-foreground opacity-0 transition hover:text-destructive group-hover:opacity-100"
                         >
-                          {t.title}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-0.5">
-                          <GripVertical
-                            size={14}
-                            className="cursor-grab text-muted-foreground/40 opacity-0 transition group-hover:opacity-100"
-                            aria-hidden
-                          />
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              remove(t.id);
-                            }}
-                            aria-label="Delete task"
-                            className="text-muted-foreground opacity-0 transition hover:text-destructive group-hover:opacity-100"
-                          >
-                            <Trash2 size={14} />
-                          </Button>
-                        </div>
+                          <Trash2 size={14} />
+                        </Button>
                       </div>
+                      <span
+                        className={cn(
+                          "block pr-12 text-sm font-medium leading-snug",
+                          t.status === "done" &&
+                            "text-muted-foreground line-through",
+                        )}
+                      >
+                        {t.title}
+                      </span>
 
                       {t.description && (
                         <p className="line-clamp-2 text-xs leading-relaxed text-muted-foreground">
@@ -576,10 +577,10 @@ function TaskEditor({
         </>
       }
     >
-      <div className="space-y-4">
+      <div className="space-y-3">
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">
-            Title
+          <label className="flex h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Type size={13} /> Title
           </label>
           <Input
             value={title}
@@ -590,7 +591,7 @@ function TaskEditor({
         </div>
 
         <div className="space-y-1.5">
-          <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <label className="flex h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <AlignLeft size={13} /> Description
           </label>
           <Textarea
@@ -603,8 +604,8 @@ function TaskEditor({
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Status
+            <label className="flex h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Columns3 size={13} /> Status
             </label>
             <Select
               className="w-full"
@@ -620,7 +621,7 @@ function TaskEditor({
           </div>
 
           <div className="space-y-1.5">
-            <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <label className="flex h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <Flag size={13} /> Priority
             </label>
             <Select
@@ -637,8 +638,8 @@ function TaskEditor({
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Project
+            <label className="flex h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Folder size={13} /> Project
             </label>
             <Select
               className="w-full"
@@ -657,7 +658,7 @@ function TaskEditor({
           </div>
 
           <div className="space-y-1.5">
-            <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <label className="flex h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <CalendarClock size={13} /> Due date
             </label>
             <div className="flex gap-2">
