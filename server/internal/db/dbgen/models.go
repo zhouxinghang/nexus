@@ -54,6 +54,51 @@ func (ns NullResourceState) Value() (driver.Value, error) {
 	return string(ns.ResourceState), nil
 }
 
+type TaskPriority string
+
+const (
+	TaskPriorityNone   TaskPriority = "none"
+	TaskPriorityLow    TaskPriority = "low"
+	TaskPriorityMedium TaskPriority = "medium"
+	TaskPriorityHigh   TaskPriority = "high"
+	TaskPriorityUrgent TaskPriority = "urgent"
+)
+
+func (e *TaskPriority) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = TaskPriority(s)
+	case string:
+		*e = TaskPriority(s)
+	default:
+		return fmt.Errorf("unsupported scan type for TaskPriority: %T", src)
+	}
+	return nil
+}
+
+type NullTaskPriority struct {
+	TaskPriority TaskPriority `json:"task_priority"`
+	Valid        bool         `json:"valid"` // Valid is true if TaskPriority is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullTaskPriority) Scan(value interface{}) error {
+	if value == nil {
+		ns.TaskPriority, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.TaskPriority.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullTaskPriority) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.TaskPriority), nil
+}
+
 type TaskStatus string
 
 const (
@@ -162,12 +207,14 @@ type ResourceTag struct {
 }
 
 type Task struct {
-	ID        int64       `json:"id"`
-	Title     string      `json:"title"`
-	Status    TaskStatus  `json:"status"`
-	DueAt     *time.Time  `json:"due_at"`
-	ProjectID pgtype.Int8 `json:"project_id"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
-	Position  int32       `json:"position"`
+	ID          int64        `json:"id"`
+	Title       string       `json:"title"`
+	Status      TaskStatus   `json:"status"`
+	DueAt       *time.Time   `json:"due_at"`
+	ProjectID   pgtype.Int8  `json:"project_id"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+	Position    int32        `json:"position"`
+	Description string       `json:"description"`
+	Priority    TaskPriority `json:"priority"`
 }

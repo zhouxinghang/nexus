@@ -12,10 +12,10 @@ DELETE FROM projects WHERE id = $1;
 
 -- name: CreateTask :one
 -- New tasks land at the bottom of their column.
-INSERT INTO tasks (title, status, due_at, project_id, position)
+INSERT INTO tasks (title, description, status, priority, due_at, project_id, position)
 VALUES (
-    $1, $2, $3, $4,
-    COALESCE((SELECT MAX(position) + 1 FROM tasks WHERE status = $2), 0)
+    $1, $2, $3, $4, $5, $6,
+    COALESCE((SELECT MAX(position) + 1 FROM tasks WHERE status = $3), 0)
 )
 RETURNING *;
 
@@ -30,11 +30,13 @@ ORDER BY
 
 -- name: UpdateTask :one
 UPDATE tasks
-SET title      = $2,
-    status     = $3,
-    due_at     = $4,
-    project_id = $5,
-    updated_at = now()
+SET title       = $2,
+    description = $3,
+    status      = $4,
+    priority    = $5,
+    due_at      = $6,
+    project_id  = $7,
+    updated_at  = now()
 WHERE id = $1
 RETURNING *;
 

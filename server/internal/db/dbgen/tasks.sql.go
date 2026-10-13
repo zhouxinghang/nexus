@@ -26,26 +26,30 @@ func (q *Queries) CreateProject(ctx context.Context, name string) (Project, erro
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (title, status, due_at, project_id, position)
+INSERT INTO tasks (title, description, status, priority, due_at, project_id, position)
 VALUES (
-    $1, $2, $3, $4,
-    COALESCE((SELECT MAX(position) + 1 FROM tasks WHERE status = $2), 0)
+    $1, $2, $3, $4, $5, $6,
+    COALESCE((SELECT MAX(position) + 1 FROM tasks WHERE status = $3), 0)
 )
-RETURNING id, title, status, due_at, project_id, created_at, updated_at, position
+RETURNING id, title, status, due_at, project_id, created_at, updated_at, position, description, priority
 `
 
 type CreateTaskParams struct {
-	Title     string      `json:"title"`
-	Status    TaskStatus  `json:"status"`
-	DueAt     *time.Time  `json:"due_at"`
-	ProjectID pgtype.Int8 `json:"project_id"`
+	Title       string       `json:"title"`
+	Description string       `json:"description"`
+	Status      TaskStatus   `json:"status"`
+	Priority    TaskPriority `json:"priority"`
+	DueAt       *time.Time   `json:"due_at"`
+	ProjectID   pgtype.Int8  `json:"project_id"`
 }
 
 // New tasks land at the bottom of their column.
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
 	row := q.db.QueryRow(ctx, createTask,
 		arg.Title,
+		arg.Description,
 		arg.Status,
+		arg.Priority,
 		arg.DueAt,
 		arg.ProjectID,
 	)
@@ -59,6 +63,8 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Position,
+		&i.Description,
+		&i.Priority,
 	)
 	return i, err
 }
@@ -82,7 +88,7 @@ func (q *Queries) DeleteTask(ctx context.Context, id int64) error {
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, title, status, due_at, project_id, created_at, updated_at, position FROM tasks WHERE id = $1
+SELECT id, title, status, due_at, project_id, created_at, updated_at, position, description, priority FROM tasks WHERE id = $1
 `
 
 func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
@@ -97,6 +103,8 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Position,
+		&i.Description,
+		&i.Priority,
 	)
 	return i, err
 }
@@ -127,7 +135,7 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, title, status, due_at, project_id, created_at, updated_at, position FROM tasks
+SELECT id, title, status, due_at, project_id, created_at, updated_at, position, description, priority FROM tasks
 ORDER BY
     CASE status WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 WHEN 'done' THEN 2 END,
     position ASC, id ASC
@@ -151,6 +159,8 @@ func (q *Queries) ListTasks(ctx context.Context) ([]Task, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Position,
+			&i.Description,
+			&i.Priority,
 		); err != nil {
 			return nil, err
 		}
@@ -186,28 +196,34 @@ func (q *Queries) ReorderTasks(ctx context.Context, arg ReorderTasksParams) erro
 
 const updateTask = `-- name: UpdateTask :one
 UPDATE tasks
-SET title      = $2,
-    status     = $3,
-    due_at     = $4,
-    project_id = $5,
-    updated_at = now()
+SET title       = $2,
+    description = $3,
+    status      = $4,
+    priority    = $5,
+    due_at      = $6,
+    project_id  = $7,
+    updated_at  = now()
 WHERE id = $1
-RETURNING id, title, status, due_at, project_id, created_at, updated_at, position
+RETURNING id, title, status, due_at, project_id, created_at, updated_at, position, description, priority
 `
 
 type UpdateTaskParams struct {
-	ID        int64       `json:"id"`
-	Title     string      `json:"title"`
-	Status    TaskStatus  `json:"status"`
-	DueAt     *time.Time  `json:"due_at"`
-	ProjectID pgtype.Int8 `json:"project_id"`
+	ID          int64        `json:"id"`
+	Title       string       `json:"title"`
+	Description string       `json:"description"`
+	Status      TaskStatus   `json:"status"`
+	Priority    TaskPriority `json:"priority"`
+	DueAt       *time.Time   `json:"due_at"`
+	ProjectID   pgtype.Int8  `json:"project_id"`
 }
 
 func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error) {
 	row := q.db.QueryRow(ctx, updateTask,
 		arg.ID,
 		arg.Title,
+		arg.Description,
 		arg.Status,
+		arg.Priority,
 		arg.DueAt,
 		arg.ProjectID,
 	)
@@ -221,6 +237,8 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Position,
+		&i.Description,
+		&i.Priority,
 	)
 	return i, err
 }

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
-import { Loader2, type LucideIcon } from "lucide-react";
+import { Loader2, X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/api";
 
 /* ------------------------------------------------------------------ Button */
@@ -235,5 +235,101 @@ export function Spinner({ className }: { className?: string }) {
       className={cn("animate-spin text-muted-foreground", className)}
       aria-hidden
     />
+  );
+}
+
+/* --------------------------------------------------------------- Modal */
+
+// A centered overlay dialog. Closes on backdrop click or Escape; locks body
+// scroll while open. Kept dependency-free (no portal) since the app has a
+// single root and the fixed overlay already escapes layout flow.
+export function Modal({
+  open,
+  onClose,
+  title,
+  description,
+  icon: Icon,
+  children,
+  footer,
+  className,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: React.ReactNode;
+  description?: React.ReactNode;
+  icon?: LucideIcon;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+  className?: string;
+}) {
+  React.useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
+      <div
+        className="absolute inset-0 bg-foreground/40 backdrop-blur-sm animate-fade-in"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={cn(
+          "relative z-10 flex max-h-[90vh] w-full flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-pop animate-scale-in sm:max-w-lg sm:rounded-xl",
+          className,
+        )}
+      >
+        {(title || Icon) && (
+          <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+            <div className="flex min-w-0 items-start gap-3">
+              {Icon && (
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+                  <Icon size={18} />
+                </span>
+              )}
+              <div className="min-w-0">
+                {title && (
+                  <h2 className="truncate text-base font-semibold">{title}</h2>
+                )}
+                {description && (
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    {description}
+                  </p>
+                )}
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close"
+              onClick={onClose}
+              className="shrink-0"
+            >
+              <X size={16} />
+            </Button>
+          </div>
+        )}
+        <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        {footer && (
+          <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/30 px-5 py-3">
+            {footer}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

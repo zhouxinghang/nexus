@@ -34,14 +34,16 @@ type projectResponse struct {
 }
 
 type taskResponse struct {
-	ID        int64      `json:"id"`
-	Title     string     `json:"title"`
-	Status    string     `json:"status"`
-	Position  int32      `json:"position"`
-	DueAt     *time.Time `json:"due_at"`
-	ProjectID *int64     `json:"project_id"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Status      string     `json:"status"`
+	Priority    string     `json:"priority"`
+	Position    int32      `json:"position"`
+	DueAt       *time.Time `json:"due_at"`
+	ProjectID   *int64     `json:"project_id"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 func toTaskResponse(t dbgen.Task) taskResponse {
@@ -51,14 +53,16 @@ func toTaskResponse(t dbgen.Task) taskResponse {
 		pid = &v
 	}
 	return taskResponse{
-		ID:        t.ID,
-		Title:     t.Title,
-		Status:    string(t.Status),
-		Position:  t.Position,
-		DueAt:     t.DueAt,
-		ProjectID: pid,
-		CreatedAt: t.CreatedAt,
-		UpdatedAt: t.UpdatedAt,
+		ID:          t.ID,
+		Title:       t.Title,
+		Description: t.Description,
+		Status:      string(t.Status),
+		Priority:    string(t.Priority),
+		Position:    t.Position,
+		DueAt:       t.DueAt,
+		ProjectID:   pid,
+		CreatedAt:   t.CreatedAt,
+		UpdatedAt:   t.UpdatedAt,
 	}
 }
 
@@ -115,15 +119,26 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 // --- Tasks ---
 
 type taskWriteRequest struct {
-	Title     *string    `json:"title"`
-	Status    *string    `json:"status"`
-	DueAt     *time.Time `json:"due_at"`
-	ProjectID *int64     `json:"project_id"`
+	Title       *string    `json:"title"`
+	Description *string    `json:"description"`
+	Status      *string    `json:"status"`
+	Priority    *string    `json:"priority"`
+	DueAt       *time.Time `json:"due_at"`
+	ProjectID   *int64     `json:"project_id"`
 }
 
 func validStatus(s string) bool {
 	switch dbgen.TaskStatus(s) {
 	case dbgen.TaskStatusTodo, dbgen.TaskStatusDoing, dbgen.TaskStatusDone:
+		return true
+	}
+	return false
+}
+
+func validPriority(s string) bool {
+	switch dbgen.TaskPriority(s) {
+	case dbgen.TaskPriorityNone, dbgen.TaskPriorityLow, dbgen.TaskPriorityMedium,
+		dbgen.TaskPriorityHigh, dbgen.TaskPriorityUrgent:
 		return true
 	}
 	return false
@@ -140,8 +155,12 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params := dbgen.CreateTaskParams{
-		Title:  *req.Title,
-		Status: dbgen.TaskStatusTodo,
+		Title:    *req.Title,
+		Status:   dbgen.TaskStatusTodo,
+		Priority: dbgen.TaskPriorityNone,
+	}
+	if req.Description != nil {
+		params.Description = *req.Description
 	}
 	if req.Status != nil {
 		if !validStatus(*req.Status) {
@@ -149,6 +168,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.Status = dbgen.TaskStatus(*req.Status)
+	}
+	if req.Priority != nil {
+		if !validPriority(*req.Priority) {
+			writeError(w, http.StatusBadRequest, "invalid priority")
+			return
+		}
+		params.Priority = dbgen.TaskPriority(*req.Priority)
 	}
 	params.DueAt = req.DueAt
 	if req.ProjectID != nil {
@@ -229,11 +255,13 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := dbgen.UpdateTaskParams{
-		ID:        existing.ID,
-		Title:     existing.Title,
-		Status:    existing.Status,
-		DueAt:     existing.DueAt,
-		ProjectID: existing.ProjectID,
+		ID:          existing.ID,
+		Title:       existing.Title,
+		Description: existing.Description,
+		Status:      existing.Status,
+		Priority:    existing.Priority,
+		DueAt:       existing.DueAt,
+		ProjectID:   existing.ProjectID,
 	}
 
 	if msg, ok := raw["title"]; ok {
@@ -244,6 +272,14 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		params.Title = title
 	}
+	if msg, ok := raw["description"]; ok {
+		var description string
+		if err := json.Unmarshal(msg, &description); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid description")
+			return
+		}
+		params.Description = description
+	}
 	if msg, ok := raw["status"]; ok {
 		var status string
 		if err := json.Unmarshal(msg, &status); err != nil || !validStatus(status) {
@@ -251,6 +287,14 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.Status = dbgen.TaskStatus(status)
+	}
+	if msg, ok := raw["priority"]; ok {
+		var priority string
+		if err := json.Unmarshal(msg, &priority); err != nil || !validPriority(priority) {
+			writeError(w, http.StatusBadRequest, "invalid priority")
+			return
+		}
+		params.Priority = dbgen.TaskPriority(priority)
 	}
 	if msg, ok := raw["due_at"]; ok {
 		var due *time.Time

@@ -7,12 +7,14 @@ import (
 )
 
 type taskResp struct {
-	ID        int64      `json:"id"`
-	Title     string     `json:"title"`
-	Status    string     `json:"status"`
-	Position  int32      `json:"position"`
-	DueAt     *time.Time `json:"due_at"`
-	ProjectID *int64     `json:"project_id"`
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Status      string     `json:"status"`
+	Priority    string     `json:"priority"`
+	Position    int32      `json:"position"`
+	DueAt       *time.Time `json:"due_at"`
+	ProjectID   *int64     `json:"project_id"`
 }
 
 type projectResp struct {
@@ -31,6 +33,72 @@ func TestTaskCreateWithTitle(t *testing.T) {
 	}
 	if task.Status != "todo" {
 		t.Errorf("default status = %q, want todo", task.Status)
+	}
+	if task.Priority != "none" {
+		t.Errorf("default priority = %q, want none", task.Priority)
+	}
+	if task.Description != "" {
+		t.Errorf("default description = %q, want empty", task.Description)
+	}
+}
+
+func TestTaskCreateWithDescriptionAndPriority(t *testing.T) {
+	h := newHarness(t)
+	resp := h.do(http.MethodPost, "/api/tasks", map[string]interface{}{
+		"title":       "write spec",
+		"description": "cover the edge cases",
+		"priority":    "high",
+	})
+	mustStatus(t, resp, http.StatusCreated)
+	var task taskResp
+	decode(t, resp, &task)
+	if task.Description != "cover the edge cases" {
+		t.Errorf("description = %q", task.Description)
+	}
+	if task.Priority != "high" {
+		t.Errorf("priority = %q, want high", task.Priority)
+	}
+}
+
+func TestTaskSetPriority(t *testing.T) {
+	h := newHarness(t)
+	resp := h.do(http.MethodPost, "/api/tasks", map[string]string{"title": "triage"})
+	var task taskResp
+	decode(t, resp, &task)
+
+	for _, p := range []string{"low", "medium", "high", "urgent", "none"} {
+		r := h.do(http.MethodPatch, path("/api/tasks/", task.ID), map[string]string{"priority": p})
+		mustStatus(t, r, http.StatusOK)
+		var updated taskResp
+		decode(t, r, &updated)
+		if updated.Priority != p {
+			t.Errorf("priority = %q, want %q", updated.Priority, p)
+		}
+	}
+}
+
+func TestTaskRejectsInvalidPriority(t *testing.T) {
+	h := newHarness(t)
+	resp := h.do(http.MethodPost, "/api/tasks", map[string]string{"title": "x"})
+	var task taskResp
+	decode(t, resp, &task)
+	r := h.do(http.MethodPatch, path("/api/tasks/", task.ID), map[string]string{"priority": "critical"})
+	mustStatus(t, r, http.StatusBadRequest)
+}
+
+func TestTaskEditDescription(t *testing.T) {
+	h := newHarness(t)
+	resp := h.do(http.MethodPost, "/api/tasks", map[string]string{"title": "note taking"})
+	var task taskResp
+	decode(t, resp, &task)
+	r := h.do(http.MethodPatch, path("/api/tasks/", task.ID), map[string]string{
+		"description": "flesh out the details here",
+	})
+	mustStatus(t, r, http.StatusOK)
+	var updated taskResp
+	decode(t, r, &updated)
+	if updated.Description != "flesh out the details here" {
+		t.Errorf("description = %q", updated.Description)
 	}
 }
 

@@ -50,7 +50,9 @@ _Avoid_: datapoint, stat, reading
 
 **Task**:
 A unit of work with a fixed status of Todo, Doing, or Done, plus an optional
-due date. Tasks are ordered within each column by drag-and-drop.
+free-text description, a priority flag (None/Low/Medium/High/Urgent), and an
+optional due date. Tasks are ordered within each column by drag-and-drop;
+priority is a visual flag, not an ordering key.
 _Avoid_: todo, ticket, issue, card
 
 ### Journal
