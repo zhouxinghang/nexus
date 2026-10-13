@@ -5,5 +5,11 @@ web/node_modules/
 server/nexus
 *.test
 
+# Built SPA (produced by `cd web && npm run build`). Only the .gitkeep
+# placeholder is tracked, so `go:embed all:dist` still compiles on a fresh
+# clone; the actual bundle is a build artifact and is regenerated on build.
+server/internal/web/dist/*
+!server/internal/web/dist/.gitkeep
+
 # env
 .env
