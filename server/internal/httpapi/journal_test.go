@@ -73,6 +73,68 @@ func TestJournalFullTextSearch(t *testing.T) {
 	}
 }
 
+func TestJournalSearchIsCaseInsensitive(t *testing.T) {
+	h := newHarness(t)
+	resp := h.do(http.MethodPost, "/api/journal/entries", map[string]string{"body": "Deployed the Service"})
+	mustStatus(t, resp, http.StatusCreated)
+
+	resp = h.do(http.MethodGet, "/api/journal/entries?q=DEPLOYED", nil)
+	mustStatus(t, resp, http.StatusOK)
+	var entries []journalEntry
+	decode(t, resp, &entries)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 case-insensitive hit, got %d", len(entries))
+	}
+}
+
+func TestJournalSearchChinese(t *testing.T) {
+	h := newHarness(t)
+	bodies := []string{
+		"今天记录一下个人的工作总结",
+		"去公园散步放松了一下",
+		"【个人】目标：学习 Postgres 全文检索",
+	}
+	for _, b := range bodies {
+		resp := h.do(http.MethodPost, "/api/journal/entries", map[string]string{"body": b})
+		mustStatus(t, resp, http.StatusCreated)
+	}
+	resp := h.do(http.MethodGet, "/api/journal/entries?q=%E4%B8%AA%E4%BA%BA", nil) // q=个人
+	mustStatus(t, resp, http.StatusOK)
+	var entries []journalEntry
+	decode(t, resp, &entries)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 search hits for '个人', got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.Body == "去公园散步放松了一下" {
+			t.Error("search returned a non-matching entry")
+		}
+	}
+}
+
+func TestJournalSearchEscapesWildcards(t *testing.T) {
+	h := newHarness(t)
+	bodies := []string{
+		"got a 50% discount today",
+		"nothing special happened",
+	}
+	for _, b := range bodies {
+		resp := h.do(http.MethodPost, "/api/journal/entries", map[string]string{"body": b})
+		mustStatus(t, resp, http.StatusCreated)
+	}
+	// A literal "50%" must not be treated as a LIKE wildcard.
+	resp := h.do(http.MethodGet, "/api/journal/entries?q=50%25", nil) // q=50%
+	mustStatus(t, resp, http.StatusOK)
+	var entries []journalEntry
+	decode(t, resp, &entries)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 hit for literal '50%%', got %d", len(entries))
+	}
+	if entries[0].Body != "got a 50% discount today" {
+		t.Errorf("unexpected match: %q", entries[0].Body)
+	}
+}
+
 func TestJournalHasNoEditOrDelete(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do(http.MethodPost, "/api/journal/entries", map[string]string{"body": "immutable record"})

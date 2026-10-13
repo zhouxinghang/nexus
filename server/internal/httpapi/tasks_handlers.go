@@ -22,6 +22,7 @@ func (s *Server) registerTaskRoutes(r chi.Router) {
 
 	r.Post("/tasks", s.handleCreateTask)
 	r.Get("/tasks", s.handleListTasks)
+	r.Post("/tasks/reorder", s.handleReorderTasks)
 	r.Patch("/tasks/{id}", s.handleUpdateTask)
 	r.Delete("/tasks/{id}", s.handleDeleteTask)
 }
@@ -36,7 +37,7 @@ type taskResponse struct {
 	ID        int64      `json:"id"`
 	Title     string     `json:"title"`
 	Status    string     `json:"status"`
-	Priority  string     `json:"priority"`
+	Position  int32      `json:"position"`
 	DueAt     *time.Time `json:"due_at"`
 	ProjectID *int64     `json:"project_id"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -53,7 +54,7 @@ func toTaskResponse(t dbgen.Task) taskResponse {
 		ID:        t.ID,
 		Title:     t.Title,
 		Status:    string(t.Status),
-		Priority:  string(t.Priority),
+		Position:  t.Position,
 		DueAt:     t.DueAt,
 		ProjectID: pid,
 		CreatedAt: t.CreatedAt,
@@ -116,7 +117,6 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 type taskWriteRequest struct {
 	Title     *string    `json:"title"`
 	Status    *string    `json:"status"`
-	Priority  *string    `json:"priority"`
 	DueAt     *time.Time `json:"due_at"`
 	ProjectID *int64     `json:"project_id"`
 }
@@ -124,14 +124,6 @@ type taskWriteRequest struct {
 func validStatus(s string) bool {
 	switch dbgen.TaskStatus(s) {
 	case dbgen.TaskStatusTodo, dbgen.TaskStatusDoing, dbgen.TaskStatusDone:
-		return true
-	}
-	return false
-}
-
-func validPriority(s string) bool {
-	switch dbgen.TaskPriority(s) {
-	case dbgen.TaskPriorityNone, dbgen.TaskPriorityLow, dbgen.TaskPriorityMedium, dbgen.TaskPriorityHigh:
 		return true
 	}
 	return false
@@ -148,9 +140,8 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params := dbgen.CreateTaskParams{
-		Title:    *req.Title,
-		Status:   dbgen.TaskStatusTodo,
-		Priority: dbgen.TaskPriorityNone,
+		Title:  *req.Title,
+		Status: dbgen.TaskStatusTodo,
 	}
 	if req.Status != nil {
 		if !validStatus(*req.Status) {
@@ -158,13 +149,6 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.Status = dbgen.TaskStatus(*req.Status)
-	}
-	if req.Priority != nil {
-		if !validPriority(*req.Priority) {
-			writeError(w, http.StatusBadRequest, "invalid priority")
-			return
-		}
-		params.Priority = dbgen.TaskPriority(*req.Priority)
 	}
 	params.DueAt = req.DueAt
 	if req.ProjectID != nil {
@@ -189,6 +173,35 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		out = append(out, toTaskResponse(t))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+type reorderRequest struct {
+	Status string  `json:"status"`
+	IDs    []int64 `json:"ids"`
+}
+
+// handleReorderTasks rewrites one column's ordering. The ids are the full,
+// final top-to-bottom order of the column; tasks dragged in from another
+// column are moved into this status at their new position. Returns the full
+// task list so the client can resync in one round trip.
+func (s *Server) handleReorderTasks(w http.ResponseWriter, r *http.Request) {
+	var req reorderRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !validStatus(req.Status) {
+		writeError(w, http.StatusBadRequest, "invalid status")
+		return
+	}
+	if err := s.queries.ReorderTasks(r.Context(), dbgen.ReorderTasksParams{
+		Status: dbgen.TaskStatus(req.Status),
+		Ids:    req.IDs,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reorder tasks")
+		return
+	}
+	s.handleListTasks(w, r)
 }
 
 func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +232,6 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		ID:        existing.ID,
 		Title:     existing.Title,
 		Status:    existing.Status,
-		Priority:  existing.Priority,
 		DueAt:     existing.DueAt,
 		ProjectID: existing.ProjectID,
 	}
@@ -239,14 +251,6 @@ func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.Status = dbgen.TaskStatus(status)
-	}
-	if msg, ok := raw["priority"]; ok {
-		var priority string
-		if err := json.Unmarshal(msg, &priority); err != nil || !validPriority(priority) {
-			writeError(w, http.StatusBadRequest, "invalid priority")
-			return
-		}
-		params.Priority = dbgen.TaskPriority(priority)
 	}
 	if msg, ok := raw["due_at"]; ok {
 		var due *time.Time

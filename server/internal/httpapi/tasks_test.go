@@ -10,7 +10,7 @@ type taskResp struct {
 	ID        int64      `json:"id"`
 	Title     string     `json:"title"`
 	Status    string     `json:"status"`
-	Priority  string     `json:"priority"`
+	Position  int32      `json:"position"`
 	DueAt     *time.Time `json:"due_at"`
 	ProjectID *int64     `json:"project_id"`
 }
@@ -31,9 +31,6 @@ func TestTaskCreateWithTitle(t *testing.T) {
 	}
 	if task.Status != "todo" {
 		t.Errorf("default status = %q, want todo", task.Status)
-	}
-	if task.Priority != "none" {
-		t.Errorf("default priority = %q, want none", task.Priority)
 	}
 }
 
@@ -64,7 +61,7 @@ func TestTaskRejectsInvalidStatus(t *testing.T) {
 	mustStatus(t, r, http.StatusBadRequest)
 }
 
-func TestTaskSetPriorityAndDueDate(t *testing.T) {
+func TestTaskSetDueDate(t *testing.T) {
 	h := newHarness(t)
 	resp := h.do(http.MethodPost, "/api/tasks", map[string]string{"title": "deadline task"})
 	var task taskResp
@@ -72,15 +69,11 @@ func TestTaskSetPriorityAndDueDate(t *testing.T) {
 
 	due := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
 	r := h.do(http.MethodPatch, path("/api/tasks/", task.ID), map[string]interface{}{
-		"priority": "high",
-		"due_at":   due,
+		"due_at": due,
 	})
 	mustStatus(t, r, http.StatusOK)
 	var updated taskResp
 	decode(t, r, &updated)
-	if updated.Priority != "high" {
-		t.Errorf("priority = %q, want high", updated.Priority)
-	}
 	if updated.DueAt == nil || !updated.DueAt.Equal(due) {
 		t.Errorf("due_at = %v, want %v", updated.DueAt, due)
 	}
@@ -145,4 +138,95 @@ func TestTaskDelete(t *testing.T) {
 			t.Error("deleted task still present in list")
 		}
 	}
+}
+
+// newTask is a small helper that creates a task and returns it.
+func (h *harness) newTask(title string) taskResp {
+	h.t.Helper()
+	resp := h.do(http.MethodPost, "/api/tasks", map[string]string{"title": title})
+	mustStatus(h.t, resp, http.StatusCreated)
+	var task taskResp
+	decode(h.t, resp, &task)
+	return task
+}
+
+// tasksByStatus filters the current task list down to one column.
+func (h *harness) tasksByStatus(status string) []taskResp {
+	h.t.Helper()
+	lr := h.do(http.MethodGet, "/api/tasks", nil)
+	mustStatus(h.t, lr, http.StatusOK)
+	var all []taskResp
+	decode(h.t, lr, &all)
+	out := []taskResp{}
+	for _, tk := range all {
+		if tk.Status == status {
+			out = append(out, tk)
+		}
+	}
+	return out
+}
+
+func TestTaskReorderWithinColumn(t *testing.T) {
+	h := newHarness(t)
+	a := h.newTask("a")
+	b := h.newTask("b")
+	c := h.newTask("c")
+
+	// Created in order a,b,c — their positions should already be ascending.
+	todo := h.tasksByStatus("todo")
+	if len(todo) != 3 || todo[0].ID != a.ID || todo[2].ID != c.ID {
+		t.Fatalf("initial order = %+v", todo)
+	}
+
+	// Reorder to c,a,b.
+	r := h.do(http.MethodPost, "/api/tasks/reorder", map[string]interface{}{
+		"status": "todo",
+		"ids":    []int64{c.ID, a.ID, b.ID},
+	})
+	mustStatus(t, r, http.StatusOK)
+
+	todo = h.tasksByStatus("todo")
+	gotOrder := []int64{todo[0].ID, todo[1].ID, todo[2].ID}
+	wantOrder := []int64{c.ID, a.ID, b.ID}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Fatalf("order after reorder = %v, want %v", gotOrder, wantOrder)
+		}
+	}
+}
+
+func TestTaskReorderMovesBetweenColumns(t *testing.T) {
+	h := newHarness(t)
+	a := h.newTask("a")
+	b := h.newTask("b")
+
+	// Move b into the "doing" column at the top.
+	r := h.do(http.MethodPost, "/api/tasks/reorder", map[string]interface{}{
+		"status": "doing",
+		"ids":    []int64{b.ID},
+	})
+	mustStatus(t, r, http.StatusOK)
+
+	doing := h.tasksByStatus("doing")
+	if len(doing) != 1 || doing[0].ID != b.ID {
+		t.Fatalf("doing column = %+v, want [b]", doing)
+	}
+	if doing[0].Status != "doing" {
+		t.Errorf("moved task status = %q, want doing", doing[0].Status)
+	}
+
+	todo := h.tasksByStatus("todo")
+	if len(todo) != 1 || todo[0].ID != a.ID {
+		t.Fatalf("todo column = %+v, want [a]", todo)
+	}
+}
+
+func TestTaskReorderRejectsInvalidStatus(t *testing.T) {
+	h := newHarness(t)
+	a := h.newTask("a")
+	r := h.do(http.MethodPost, "/api/tasks/reorder", map[string]interface{}{
+		"status": "archived",
+		"ids":    []int64{a.ID},
+	})
+	mustStatus(t, r, http.StatusBadRequest)
 }

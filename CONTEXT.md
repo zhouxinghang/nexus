@@ -49,13 +49,14 @@ _Avoid_: datapoint, stat, reading
 ### Tasks
 
 **Task**:
-A unit of work with a fixed status of Todo, Doing, or Done, plus optional
-priority and due date.
+A unit of work with a fixed status of Todo, Doing, or Done, plus an optional
+due date. Tasks are ordered within each column by drag-and-drop.
 _Avoid_: todo, ticket, issue, card
 
 ### Journal
 
 **Journal Entry**:
 An append-only, immutable, plain-text record stamped with its creation time.
-Cannot be edited or deleted. Searchable by full text.
+Cannot be edited or deleted. Searchable by case-insensitive substring match
+(works for Chinese and other non-space-delimited text; see ADR-0004).
 _Avoid_: note, log, post, entry

@@ -11,9 +11,10 @@ import (
 
 type Querier interface {
 	AddResourceTag(ctx context.Context, arg AddResourceTagParams) error
-	CreateJournalEntry(ctx context.Context, body string) (CreateJournalEntryRow, error)
+	CreateJournalEntry(ctx context.Context, body string) (JournalEntry, error)
 	CreateManagedRoot(ctx context.Context, path string) (ManagedRoot, error)
 	CreateProject(ctx context.Context, name string) (Project, error)
+	// New tasks land at the bottom of their column.
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	DeleteManagedRoot(ctx context.Context, id int64) error
 	DeleteProject(ctx context.Context, id int64) error
@@ -26,7 +27,7 @@ type Querier interface {
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (FileAuditLog, error)
 	InsertMetricSample(ctx context.Context, arg InsertMetricSampleParams) (MetricSample, error)
 	ListAuditLog(ctx context.Context) ([]FileAuditLog, error)
-	ListJournalEntries(ctx context.Context) ([]ListJournalEntriesRow, error)
+	ListJournalEntries(ctx context.Context) ([]JournalEntry, error)
 	ListManagedRoots(ctx context.Context) ([]ManagedRoot, error)
 	ListMetricSamplesInRange(ctx context.Context, arg ListMetricSamplesInRangeParams) ([]MetricSample, error)
 	ListProjects(ctx context.Context) ([]Project, error)
@@ -39,7 +40,14 @@ type Querier interface {
 	MarkResourceMissing(ctx context.Context, id int64) error
 	PruneMetricSamplesBefore(ctx context.Context, takenAt time.Time) (int64, error)
 	RemoveResourceTag(ctx context.Context, arg RemoveResourceTagParams) error
-	SearchJournalEntries(ctx context.Context, websearchToTsquery string) ([]SearchJournalEntriesRow, error)
+	// Rewrite a column's ordering: every id in the list is placed in the given
+	// column at its array position (used by drag-and-drop, including moves between
+	// columns). Atomic over the whole list.
+	ReorderTasks(ctx context.Context, arg ReorderTasksParams) error
+	// Case-insensitive substring match, language-agnostic (works for CJK). The
+	// caller passes an already-escaped term wrapped in '%'; backslash is the
+	// LIKE escape character. Backed by a GIN trigram index on body.
+	SearchJournalEntries(ctx context.Context, body string) ([]JournalEntry, error)
 	UpdateResourceNote(ctx context.Context, arg UpdateResourceNoteParams) (Resource, error)
 	UpdateResourcePath(ctx context.Context, arg UpdateResourcePathParams) (Resource, error)
 	UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error)

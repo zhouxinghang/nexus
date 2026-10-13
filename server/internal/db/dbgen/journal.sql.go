@@ -7,7 +7,6 @@ package dbgen
 
 import (
 	"context"
-	"time"
 )
 
 const createJournalEntry = `-- name: CreateJournalEntry :one
@@ -16,15 +15,9 @@ VALUES ($1)
 RETURNING id, body, created_at
 `
 
-type CreateJournalEntryRow struct {
-	ID        int64     `json:"id"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func (q *Queries) CreateJournalEntry(ctx context.Context, body string) (CreateJournalEntryRow, error) {
+func (q *Queries) CreateJournalEntry(ctx context.Context, body string) (JournalEntry, error) {
 	row := q.db.QueryRow(ctx, createJournalEntry, body)
-	var i CreateJournalEntryRow
+	var i JournalEntry
 	err := row.Scan(&i.ID, &i.Body, &i.CreatedAt)
 	return i, err
 }
@@ -35,21 +28,15 @@ FROM journal_entries
 ORDER BY created_at DESC, id DESC
 `
 
-type ListJournalEntriesRow struct {
-	ID        int64     `json:"id"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func (q *Queries) ListJournalEntries(ctx context.Context) ([]ListJournalEntriesRow, error) {
+func (q *Queries) ListJournalEntries(ctx context.Context) ([]JournalEntry, error) {
 	rows, err := q.db.Query(ctx, listJournalEntries)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListJournalEntriesRow{}
+	items := []JournalEntry{}
 	for rows.Next() {
-		var i ListJournalEntriesRow
+		var i JournalEntry
 		if err := rows.Scan(&i.ID, &i.Body, &i.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -64,25 +51,22 @@ func (q *Queries) ListJournalEntries(ctx context.Context) ([]ListJournalEntriesR
 const searchJournalEntries = `-- name: SearchJournalEntries :many
 SELECT id, body, created_at
 FROM journal_entries
-WHERE search @@ websearch_to_tsquery('english', $1)
+WHERE body ILIKE $1
 ORDER BY created_at DESC, id DESC
 `
 
-type SearchJournalEntriesRow struct {
-	ID        int64     `json:"id"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func (q *Queries) SearchJournalEntries(ctx context.Context, websearchToTsquery string) ([]SearchJournalEntriesRow, error) {
-	rows, err := q.db.Query(ctx, searchJournalEntries, websearchToTsquery)
+// Case-insensitive substring match, language-agnostic (works for CJK). The
+// caller passes an already-escaped term wrapped in '%'; backslash is the
+// LIKE escape character. Backed by a GIN trigram index on body.
+func (q *Queries) SearchJournalEntries(ctx context.Context, body string) ([]JournalEntry, error) {
+	rows, err := q.db.Query(ctx, searchJournalEntries, body)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SearchJournalEntriesRow{}
+	items := []JournalEntry{}
 	for rows.Next() {
-		var i SearchJournalEntriesRow
+		var i JournalEntry
 		if err := rows.Scan(&i.ID, &i.Body, &i.CreatedAt); err != nil {
 			return nil, err
 		}

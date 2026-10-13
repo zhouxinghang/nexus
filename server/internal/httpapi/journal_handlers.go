@@ -50,7 +50,7 @@ func (s *Server) handleListJournalEntries(w http.ResponseWriter, r *http.Request
 
 	out := []journalEntryResponse{}
 	if query != "" {
-		rows, err := s.queries.SearchJournalEntries(r.Context(), query)
+		rows, err := s.queries.SearchJournalEntries(r.Context(), likeContains(query))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not search entries")
 			return
@@ -69,4 +69,13 @@ func (s *Server) handleListJournalEntries(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// likeContains builds a case-insensitive "contains" pattern for an ILIKE
+// query, escaping the LIKE wildcards (% and _) and the escape character (\)
+// in the user's term so they match literally. The term is matched as a
+// substring, which lets Chinese and other non-space-delimited text be found.
+func likeContains(term string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + replacer.Replace(term) + "%"
 }

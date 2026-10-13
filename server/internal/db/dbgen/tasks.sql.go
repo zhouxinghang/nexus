@@ -26,24 +26,26 @@ func (q *Queries) CreateProject(ctx context.Context, name string) (Project, erro
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (title, status, priority, due_at, project_id)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, title, status, priority, due_at, project_id, created_at, updated_at
+INSERT INTO tasks (title, status, due_at, project_id, position)
+VALUES (
+    $1, $2, $3, $4,
+    COALESCE((SELECT MAX(position) + 1 FROM tasks WHERE status = $2), 0)
+)
+RETURNING id, title, status, due_at, project_id, created_at, updated_at, position
 `
 
 type CreateTaskParams struct {
-	Title     string       `json:"title"`
-	Status    TaskStatus   `json:"status"`
-	Priority  TaskPriority `json:"priority"`
-	DueAt     *time.Time   `json:"due_at"`
-	ProjectID pgtype.Int8  `json:"project_id"`
+	Title     string      `json:"title"`
+	Status    TaskStatus  `json:"status"`
+	DueAt     *time.Time  `json:"due_at"`
+	ProjectID pgtype.Int8 `json:"project_id"`
 }
 
+// New tasks land at the bottom of their column.
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
 	row := q.db.QueryRow(ctx, createTask,
 		arg.Title,
 		arg.Status,
-		arg.Priority,
 		arg.DueAt,
 		arg.ProjectID,
 	)
@@ -52,11 +54,11 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.ID,
 		&i.Title,
 		&i.Status,
-		&i.Priority,
 		&i.DueAt,
 		&i.ProjectID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Position,
 	)
 	return i, err
 }
@@ -80,7 +82,7 @@ func (q *Queries) DeleteTask(ctx context.Context, id int64) error {
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, title, status, priority, due_at, project_id, created_at, updated_at FROM tasks WHERE id = $1
+SELECT id, title, status, due_at, project_id, created_at, updated_at, position FROM tasks WHERE id = $1
 `
 
 func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
@@ -90,11 +92,11 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 		&i.ID,
 		&i.Title,
 		&i.Status,
-		&i.Priority,
 		&i.DueAt,
 		&i.ProjectID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Position,
 	)
 	return i, err
 }
@@ -125,10 +127,10 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT id, title, status, priority, due_at, project_id, created_at, updated_at FROM tasks
+SELECT id, title, status, due_at, project_id, created_at, updated_at, position FROM tasks
 ORDER BY
     CASE status WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 WHEN 'done' THEN 2 END,
-    created_at ASC, id ASC
+    position ASC, id ASC
 `
 
 func (q *Queries) ListTasks(ctx context.Context) ([]Task, error) {
@@ -144,11 +146,11 @@ func (q *Queries) ListTasks(ctx context.Context) ([]Task, error) {
 			&i.ID,
 			&i.Title,
 			&i.Status,
-			&i.Priority,
 			&i.DueAt,
 			&i.ProjectID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Position,
 		); err != nil {
 			return nil, err
 		}
@@ -160,25 +162,45 @@ func (q *Queries) ListTasks(ctx context.Context) ([]Task, error) {
 	return items, nil
 }
 
+const reorderTasks = `-- name: ReorderTasks :exec
+UPDATE tasks AS t
+SET status     = $1,
+    position   = v.ord - 1,
+    updated_at = now()
+FROM unnest($2::bigint[]) WITH ORDINALITY AS v(id, ord)
+WHERE t.id = v.id
+`
+
+type ReorderTasksParams struct {
+	Status TaskStatus `json:"status"`
+	Ids    []int64    `json:"ids"`
+}
+
+// Rewrite a column's ordering: every id in the list is placed in the given
+// column at its array position (used by drag-and-drop, including moves between
+// columns). Atomic over the whole list.
+func (q *Queries) ReorderTasks(ctx context.Context, arg ReorderTasksParams) error {
+	_, err := q.db.Exec(ctx, reorderTasks, arg.Status, arg.Ids)
+	return err
+}
+
 const updateTask = `-- name: UpdateTask :one
 UPDATE tasks
 SET title      = $2,
     status     = $3,
-    priority   = $4,
-    due_at     = $5,
-    project_id = $6,
+    due_at     = $4,
+    project_id = $5,
     updated_at = now()
 WHERE id = $1
-RETURNING id, title, status, priority, due_at, project_id, created_at, updated_at
+RETURNING id, title, status, due_at, project_id, created_at, updated_at, position
 `
 
 type UpdateTaskParams struct {
-	ID        int64        `json:"id"`
-	Title     string       `json:"title"`
-	Status    TaskStatus   `json:"status"`
-	Priority  TaskPriority `json:"priority"`
-	DueAt     *time.Time   `json:"due_at"`
-	ProjectID pgtype.Int8  `json:"project_id"`
+	ID        int64       `json:"id"`
+	Title     string      `json:"title"`
+	Status    TaskStatus  `json:"status"`
+	DueAt     *time.Time  `json:"due_at"`
+	ProjectID pgtype.Int8 `json:"project_id"`
 }
 
 func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error) {
@@ -186,7 +208,6 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, e
 		arg.ID,
 		arg.Title,
 		arg.Status,
-		arg.Priority,
 		arg.DueAt,
 		arg.ProjectID,
 	)
@@ -195,11 +216,11 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, e
 		&i.ID,
 		&i.Title,
 		&i.Status,
-		&i.Priority,
 		&i.DueAt,
 		&i.ProjectID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Position,
 	)
 	return i, err
 }
