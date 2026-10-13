@@ -172,3 +172,131 @@ func TestAuditLogRecordsMutations(t *testing.T) {
 		}
 	}
 }
+
+type batchResultResp struct {
+	Moved   int      `json:"moved"`
+	Tagged  int      `json:"tagged"`
+	Deleted int      `json:"deleted"`
+	Failed  []string `json:"failed"`
+}
+
+func TestBatchMoveMovesManyFiles(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b")
+	writeFile(t, filepath.Join(dir, "c.txt"), "c")
+	sub := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	root := h.createRoot(t, dir)
+	resources := h.scan(t, root.ID)
+
+	ids := []int64{}
+	for _, r := range resources {
+		if !r.IsDir {
+			ids = append(ids, r.ID)
+		}
+	}
+
+	resp := h.do(http.MethodPost, "/api/files/resources/batch/move", map[string]any{
+		"ids":  ids,
+		"dest": sub,
+	})
+	mustStatus(t, resp, http.StatusOK)
+	var res batchResultResp
+	decode(t, resp, &res)
+	if res.Moved != len(ids) {
+		t.Errorf("moved = %d, want %d", res.Moved, len(ids))
+	}
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if _, err := os.Stat(filepath.Join(sub, name)); err != nil {
+			t.Errorf("%s not moved into archive: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s still at source after move", name)
+		}
+	}
+}
+
+func TestBatchMoveRejectsOutsideRoot(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	root := h.createRoot(t, dir)
+	resources := h.scan(t, root.ID)
+	id := resources[0].ID
+
+	outside := t.TempDir() // a directory outside every Managed Root
+	resp := h.do(http.MethodPost, "/api/files/resources/batch/move", map[string]any{
+		"ids":  []int64{id},
+		"dest": outside,
+	})
+	mustStatus(t, resp, http.StatusBadRequest)
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); err != nil {
+		t.Errorf("source disturbed by rejected batch move: %v", err)
+	}
+}
+
+func TestBatchAddTagTagsManyFiles(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b")
+	root := h.createRoot(t, dir)
+	resources := h.scan(t, root.ID)
+
+	ids := []int64{resources[0].ID, resources[1].ID}
+	resp := h.do(http.MethodPost, "/api/files/resources/batch/tag", map[string]any{
+		"ids": ids,
+		"tag": "shared",
+	})
+	mustStatus(t, resp, http.StatusOK)
+
+	lr := h.do(http.MethodGet, "/api/files/resources", nil)
+	var all []resourceResp
+	decode(t, lr, &all)
+	tagged := 0
+	for _, r := range all {
+		for _, tg := range r.Tags {
+			if tg == "shared" {
+				tagged++
+			}
+		}
+	}
+	if tagged != 2 {
+		t.Errorf("tagged %d resources, want 2", tagged)
+	}
+}
+
+func TestBatchDeleteRemovesManyFiles(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b")
+	root := h.createRoot(t, dir)
+	resources := h.scan(t, root.ID)
+
+	ids := []int64{resources[0].ID, resources[1].ID}
+	resp := h.do(http.MethodPost, "/api/files/resources/batch/delete", map[string]any{
+		"ids": ids,
+	})
+	mustStatus(t, resp, http.StatusOK)
+	var res batchResultResp
+	decode(t, resp, &res)
+	if res.Deleted != 2 {
+		t.Errorf("deleted = %d, want 2", res.Deleted)
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s still on disk after batch delete", name)
+		}
+	}
+	lr := h.do(http.MethodGet, "/api/files/resources", nil)
+	var remaining []resourceResp
+	decode(t, lr, &remaining)
+	if len(remaining) != 0 {
+		t.Errorf("resources remain after batch delete: %+v", remaining)
+	}
+}

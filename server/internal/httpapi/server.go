@@ -100,3 +100,18 @@ func decodeJSONRaw(r *http.Request, v interface{}) error {
 	dec := json.NewDecoder(r.Body)
 	return dec.Decode(v)
 }
+
+// inTx runs fn inside a single database transaction, committing on success and
+// rolling back on any error. Handlers use it to make multi-statement batch
+// mutations atomic in the index.
+func (s *Server) inTx(r *http.Request, fn func(q *dbgen.Queries) error) error {
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(r.Context())
+	if err := fn(s.queries.WithTx(tx)); err != nil {
+		return err
+	}
+	return tx.Commit(r.Context())
+}

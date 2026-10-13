@@ -22,6 +22,7 @@ import {
   File,
   Presentation,
   FolderPlus,
+  FolderInput,
   RefreshCw,
   Trash2,
   Download,
@@ -176,6 +177,10 @@ export default function Files() {
   const [tagFilter, setTagFilter] = useState("");
   const [kindFilter, setKindFilter] = useState<FileKind | "all">("all");
   const [selected, setSelected] = useState<Resource | null>(null);
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+  const [batchTag, setBatchTag] = useState("");
+  const [batchDest, setBatchDest] = useState("");
+  const [batchBusy, setBatchBusy] = useState(false);
   const [error, setError] = useState("");
   const [scanning, setScanning] = useState<number | null>(null);
 
@@ -213,6 +218,22 @@ export default function Files() {
   useEffect(() => {
     loadResources();
   }, [rootFilter, tagFilter]);
+
+  // Drop checked ids that no longer exist in the current resource set so the
+  // batch bar's count always matches reality after loads/deletes.
+  useEffect(() => {
+    setChecked((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(resources.map((r) => r.id));
+      let changed = false;
+      const next = new Set<number>();
+      for (const id of prev) {
+        if (live.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [resources]);
 
   async function addRoot(e: React.FormEvent) {
     e.preventDefault();
@@ -283,6 +304,127 @@ export default function Files() {
     await api.del(`/api/files/resources/${r.id}/file`);
     setSelected(null);
     loadResources();
+  }
+
+  // ---- Multi-select / batch operations -------------------------------------
+  // `checked` holds resource ids. We keep it pruned to currently-visible rows so
+  // the batch bar never acts on files hidden by a filter the user forgot about.
+  function toggleChecked(id: number) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  function clearChecked() {
+    setChecked(new Set());
+  }
+  function toggleAllVisible() {
+    const vis = visible();
+    const allOn = vis.length > 0 && vis.every((r) => checked.has(r.id));
+    setChecked(allOn ? new Set() : new Set(vis.map((r) => r.id)));
+  }
+
+  // The checked resources, resolved against the current list and in table order.
+  function checkedResources(): Resource[] {
+    return visible().filter((r) => checked.has(r.id));
+  }
+  // Just the checked ids, for the single-request batch endpoints.
+  function checkedIDs(resources: Resource[]): number[] {
+    return resources.map((r) => r.id);
+  }
+
+  async function batchAddTag() {
+    const tag = batchTag.trim();
+    const ids = checkedIDs(checkedResources());
+    if (!tag || ids.length === 0) return;
+    setBatchBusy(true);
+    setError("");
+    try {
+      // One request tags every selected resource server-side.
+      await api.post("/api/files/resources/batch/tag", { ids, tag });
+      setBatchTag("");
+      await loadResources();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  function batchDownload() {
+    // Trigger a download per selected (non-dir, present) file.
+    for (const r of checkedResources()) {
+      if (r.is_dir || r.state === "missing") continue;
+      const a = document.createElement("a");
+      a.href = `/api/files/resources/${r.id}/download`;
+      a.download = r.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  }
+
+  async function batchMove() {
+    const dest = batchDest.trim();
+    if (!dest) return;
+    // Missing files have no on-disk source to move, so skip them.
+    const ids = checkedIDs(checkedResources().filter((r) => r.state !== "missing"));
+    if (ids.length === 0) return;
+    setBatchBusy(true);
+    setError("");
+    try {
+      // One request moves every selected file into the destination directory.
+      const res = await api.post<{ failed?: string[] }>(
+        "/api/files/resources/batch/move",
+        { ids, dest },
+      );
+      setBatchDest("");
+      if (selected && checked.has(selected.id)) setSelected(null);
+      await loadResources();
+      if (res?.failed?.length) {
+        setError(`Could not move ${res.failed.length} file(s).`);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function batchDelete() {
+    const targets = checkedResources();
+    const ids = checkedIDs(targets);
+    if (ids.length === 0) return;
+    const missing = targets.filter((r) => r.state === "missing").length;
+    const live = targets.length - missing;
+    if (
+      !confirm(
+        `Permanently delete ${live} file(s)` +
+          (missing ? ` and clear ${missing} missing entr(ies)` : "") +
+          "? This cannot be undone.",
+      )
+    )
+      return;
+    setBatchBusy(true);
+    setError("");
+    try {
+      // One request deletes the bytes and clears the index rows server-side.
+      const res = await api.post<{ failed?: string[] }>(
+        "/api/files/resources/batch/delete",
+        { ids },
+      );
+      if (selected && checked.has(selected.id)) setSelected(null);
+      clearChecked();
+      await loadResources();
+      if (res?.failed?.length) {
+        setError(`Could not delete ${res.failed.length} file(s).`);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBatchBusy(false);
+    }
   }
 
   return (
@@ -422,6 +564,83 @@ export default function Files() {
         </div>
       )}
 
+      {checked.size > 0 && (
+        <Card className="flex flex-wrap items-center gap-2 border-primary/40 bg-accent/40 p-3">
+          <span className="flex items-center gap-2 text-sm font-medium">
+            <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold tabular-nums text-primary-foreground">
+              {checked.size}
+            </span>
+            selected
+          </span>
+          <div className="h-5 w-px bg-border" />
+          <div className="flex items-center gap-1.5">
+            <Input
+              className="h-8 w-36"
+              placeholder="add tag…"
+              value={batchTag}
+              onChange={(e) => setBatchTag(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  batchAddTag();
+                }
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              loading={batchBusy}
+              disabled={!batchTag.trim()}
+              onClick={batchAddTag}
+            >
+              <Tag size={13} /> Tag
+            </Button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Input
+              className="h-8 w-48 font-mono"
+              placeholder="/managed/root/dest…"
+              value={batchDest}
+              onChange={(e) => setBatchDest(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  batchMove();
+                }
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              loading={batchBusy}
+              disabled={!batchDest.trim()}
+              onClick={batchMove}
+            >
+              <FolderInput size={13} /> Move
+            </Button>
+          </div>
+          <Button size="sm" variant="outline" onClick={batchDownload}>
+            <Download size={13} /> Download
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            loading={batchBusy}
+            onClick={batchDelete}
+          >
+            <Trash2 size={13} /> Delete
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto"
+            onClick={clearChecked}
+          >
+            <X size={13} /> Clear
+          </Button>
+        </Card>
+      )}
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="overflow-hidden p-0 lg:col-span-2">
           {visible().length === 0 ? (
@@ -454,6 +673,27 @@ export default function Files() {
               <table className="w-full border-separate border-spacing-0 text-sm">
                 <thead>
                   <tr className="text-left text-xs text-muted-foreground">
+                    <th className="sticky top-0 z-10 w-10 border-b border-border bg-card/95 px-4 py-2.5 backdrop-blur">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all"
+                        className="h-4 w-4 cursor-pointer accent-primary align-middle"
+                        checked={
+                          visible().length > 0 &&
+                          visible().every((r) => checked.has(r.id))
+                        }
+                        ref={(el) => {
+                          if (el) {
+                            const vis = visible();
+                            const some = vis.some((r) => checked.has(r.id));
+                            const all =
+                              vis.length > 0 && vis.every((r) => checked.has(r.id));
+                            el.indeterminate = some && !all;
+                          }
+                        }}
+                        onChange={toggleAllVisible}
+                      />
+                    </th>
                     <th className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur">
                       Name
                     </th>
@@ -474,6 +714,8 @@ export default function Files() {
                       key={r.id}
                       resource={r}
                       selected={selected?.id === r.id}
+                      checked={checked.has(r.id)}
+                      onToggleCheck={toggleChecked}
                       onSelect={setSelected}
                     />
                   ))}
@@ -547,10 +789,14 @@ function TypeChip({
 function ResourceRow({
   resource,
   selected,
+  checked,
+  onToggleCheck,
   onSelect,
 }: {
   resource: Resource;
   selected: boolean;
+  checked: boolean;
+  onToggleCheck: (id: number) => void;
   onSelect: (r: Resource) => void;
 }) {
   const meta = kindMeta(classify(resource));
@@ -572,6 +818,18 @@ function ResourceRow({
         resource.state === "missing" && "opacity-60",
       )}
     >
+      <td
+        className="border-b border-border/60 px-4 py-2.5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <input
+          type="checkbox"
+          aria-label={`Select ${resource.name}`}
+          className="h-4 w-4 cursor-pointer accent-primary align-middle"
+          checked={checked}
+          onChange={() => onToggleCheck(resource.id)}
+        />
+      </td>
       <td
         className={cn(
           "border-b border-border/60 px-4 py-2.5",

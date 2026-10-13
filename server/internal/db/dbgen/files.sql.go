@@ -28,6 +28,23 @@ func (q *Queries) AddResourceTag(ctx context.Context, arg AddResourceTagParams) 
 	return err
 }
 
+const addTagToResources = `-- name: AddTagToResources :exec
+INSERT INTO resource_tags (resource_id, tag)
+SELECT id, $1::text
+FROM unnest($2::bigint[]) AS id
+ON CONFLICT DO NOTHING
+`
+
+type AddTagToResourcesParams struct {
+	Tag string  `json:"tag"`
+	Ids []int64 `json:"ids"`
+}
+
+func (q *Queries) AddTagToResources(ctx context.Context, arg AddTagToResourcesParams) error {
+	_, err := q.db.Exec(ctx, addTagToResources, arg.Tag, arg.Ids)
+	return err
+}
+
 const createManagedRoot = `-- name: CreateManagedRoot :one
 INSERT INTO managed_roots (path)
 VALUES ($1)
@@ -56,6 +73,15 @@ DELETE FROM resources WHERE id = $1
 
 func (q *Queries) DeleteResource(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteResource, id)
+	return err
+}
+
+const deleteResourcesByIDs = `-- name: DeleteResourcesByIDs :exec
+DELETE FROM resources WHERE id = ANY($1::bigint[])
+`
+
+func (q *Queries) DeleteResourcesByIDs(ctx context.Context, ids []int64) error {
+	_, err := q.db.Exec(ctx, deleteResourcesByIDs, ids)
 	return err
 }
 
@@ -266,6 +292,44 @@ ORDER BY path ASC
 
 func (q *Queries) ListResources(ctx context.Context) ([]Resource, error) {
 	rows, err := q.db.Query(ctx, listResources)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Resource{}
+	for rows.Next() {
+		var i Resource
+		if err := rows.Scan(
+			&i.ID,
+			&i.RootID,
+			&i.Path,
+			&i.Name,
+			&i.Size,
+			&i.IsDir,
+			&i.ModifiedAt,
+			&i.State,
+			&i.Note,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listResourcesByIDs = `-- name: ListResourcesByIDs :many
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at FROM resources
+WHERE id = ANY($1::bigint[])
+ORDER BY path ASC
+`
+
+func (q *Queries) ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resource, error) {
+	rows, err := q.db.Query(ctx, listResourcesByIDs, ids)
 	if err != nil {
 		return nil, err
 	}

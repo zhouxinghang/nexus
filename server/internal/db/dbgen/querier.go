@@ -11,6 +11,7 @@ import (
 
 type Querier interface {
 	AddResourceTag(ctx context.Context, arg AddResourceTagParams) error
+	AddTagToResources(ctx context.Context, arg AddTagToResourcesParams) error
 	CreateJournalEntry(ctx context.Context, body string) (JournalEntry, error)
 	CreateManagedRoot(ctx context.Context, path string) (ManagedRoot, error)
 	CreateProject(ctx context.Context, name string) (Project, error)
@@ -19,6 +20,7 @@ type Querier interface {
 	DeleteManagedRoot(ctx context.Context, id int64) error
 	DeleteProject(ctx context.Context, id int64) error
 	DeleteResource(ctx context.Context, id int64) error
+	DeleteResourcesByIDs(ctx context.Context, ids []int64) error
 	DeleteTask(ctx context.Context, id int64) error
 	GetManagedRoot(ctx context.Context, id int64) (ManagedRoot, error)
 	GetResource(ctx context.Context, id int64) (Resource, error)
@@ -34,6 +36,7 @@ type Querier interface {
 	ListResourceIDsByRoot(ctx context.Context, rootID int64) ([]ListResourceIDsByRootRow, error)
 	ListResourceIDsByTag(ctx context.Context, tag string) ([]int64, error)
 	ListResources(ctx context.Context) ([]Resource, error)
+	ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resource, error)
 	ListResourcesByRoot(ctx context.Context, rootID int64) ([]Resource, error)
 	ListTagsForResource(ctx context.Context, resourceID int64) ([]string, error)
 	ListTasks(ctx context.Context) ([]Task, error)

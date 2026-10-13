@@ -39,6 +39,13 @@ func (s *Server) registerFileRoutes(r chi.Router) {
 	r.Post("/files/resources/{id}/move", s.handleMoveResource)
 	r.Delete("/files/resources/{id}/file", s.handleDeleteResourceFile)
 
+	// Batch mutations: one request operates on many Resources so the client
+	// never fans out N round-trips. The static "batch" segment is matched
+	// ahead of the "{id}" wildcard by chi.
+	r.Post("/files/resources/batch/move", s.handleBatchMove)
+	r.Post("/files/resources/batch/tag", s.handleBatchAddTag)
+	r.Post("/files/resources/batch/delete", s.handleBatchDelete)
+
 	// Audit log
 	r.Get("/files/audit", s.handleListAudit)
 }

@@ -29,6 +29,11 @@ RETURNING *;
 -- name: GetResource :one
 SELECT * FROM resources WHERE id = $1;
 
+-- name: ListResourcesByIDs :many
+SELECT * FROM resources
+WHERE id = ANY(sqlc.arg(ids)::bigint[])
+ORDER BY path ASC;
+
 -- name: GetResourceByPath :one
 SELECT * FROM resources WHERE path = $1;
 
@@ -53,6 +58,9 @@ WHERE id = $1;
 -- name: DeleteResource :exec
 DELETE FROM resources WHERE id = $1;
 
+-- name: DeleteResourcesByIDs :exec
+DELETE FROM resources WHERE id = ANY(sqlc.arg(ids)::bigint[]);
+
 -- name: UpdateResourceNote :one
 UPDATE resources
 SET note = $2, updated_at = now()
@@ -68,6 +76,12 @@ RETURNING *;
 -- name: AddResourceTag :exec
 INSERT INTO resource_tags (resource_id, tag)
 VALUES ($1, $2)
+ON CONFLICT DO NOTHING;
+
+-- name: AddTagToResources :exec
+INSERT INTO resource_tags (resource_id, tag)
+SELECT id, sqlc.arg(tag)::text
+FROM unnest(sqlc.arg(ids)::bigint[]) AS id
 ON CONFLICT DO NOTHING;
 
 -- name: RemoveResourceTag :exec

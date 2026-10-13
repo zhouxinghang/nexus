@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Button, Card, Textarea, Input, EmptyState, Skeleton } from "@/components/ui";
-import { BookText, Search, X } from "lucide-react";
+import { BookText, Check, Copy, Search, X } from "lucide-react";
 
 type Entry = { id: number; body: string; created_at: string };
 
@@ -11,7 +11,9 @@ export default function Journal() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
   const activeQuery = useRef("");
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function load(q = "") {
     activeQuery.current = q;
@@ -28,7 +30,21 @@ export default function Journal() {
 
   useEffect(() => {
     load();
+    return () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    };
   }, []);
+
+  async function copyEntry(entry: Entry) {
+    try {
+      await navigator.clipboard.writeText(entry.body);
+      setCopiedId(entry.id);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      // Clipboard unavailable (e.g. non-secure context); ignore.
+    }
+  }
 
   async function append(e: React.FormEvent) {
     e.preventDefault();
@@ -134,9 +150,25 @@ export default function Journal() {
           />
         ) : (
           entries.map((e) => (
-            <Card key={e.id} className="p-4">
-              <div className="mb-1 text-xs font-medium text-muted-foreground">
-                {new Date(e.created_at).toLocaleString()}
+            <Card key={e.id} className="group p-4">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {new Date(e.created_at).toLocaleString()}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={copiedId === e.id ? "Copied" : "Copy entry"}
+                  title={copiedId === e.id ? "Copied" : "Copy entry"}
+                  className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                  onClick={() => copyEntry(e)}
+                >
+                  {copiedId === e.id ? (
+                    <Check size={15} className="text-success" />
+                  ) : (
+                    <Copy size={15} />
+                  )}
+                </Button>
               </div>
               <div className="whitespace-pre-wrap text-sm leading-relaxed">
                 {e.body}
