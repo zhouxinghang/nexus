@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { useToast } from "@/lib/toast";
 import {
   Button,
   Card,
@@ -107,6 +108,7 @@ export default function Tasks() {
   const [newProject, setNewProject] = useState("");
   const [projectFilter, setProjectFilter] = useState<number | "all">("all");
   const [editing, setEditing] = useState<Task | null>(null);
+  const toast = useToast();
 
   const dragId = useRef<number | null>(null);
   const didDrag = useRef(false);
@@ -128,34 +130,53 @@ export default function Tasks() {
   async function create(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
-    await api.post("/api/tasks", {
-      title,
-      priority: composerPriority,
-      project_id: projectId === "" ? null : projectId,
-    });
-    setTitle("");
-    setComposerPriority("none");
-    load();
+    try {
+      await api.post("/api/tasks", {
+        title,
+        priority: composerPriority,
+        project_id: projectId === "" ? null : projectId,
+      });
+      setTitle("");
+      setComposerPriority("none");
+      load();
+      toast.success("Task created");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   async function patch(id: number, body: Partial<Task>) {
-    const updated = await api.patch<Task>(`/api/tasks/${id}`, body);
-    setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
-    setEditing((e) => (e && e.id === id ? updated : e));
+    try {
+      const updated = await api.patch<Task>(`/api/tasks/${id}`, body);
+      setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
+      setEditing((e) => (e && e.id === id ? updated : e));
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   async function remove(id: number) {
-    await api.del(`/api/tasks/${id}`);
-    setEditing((e) => (e && e.id === id ? null : e));
-    load();
+    try {
+      await api.del(`/api/tasks/${id}`);
+      setEditing((e) => (e && e.id === id ? null : e));
+      load();
+      toast.success("Task deleted");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   async function addProject(e: React.FormEvent) {
     e.preventDefault();
     if (!newProject.trim()) return;
-    await api.post("/api/projects", { name: newProject });
-    setNewProject("");
-    load();
+    try {
+      await api.post("/api/projects", { name: newProject });
+      setNewProject("");
+      load();
+      toast.success("Project created");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   function projectName(id: number | null) {
@@ -221,8 +242,14 @@ export default function Tasks() {
     // Optimistic: reassign status locally so the board doesn't flash.
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
 
-    const updated = await api.post<Task[]>("/api/tasks/reorder", { status, ids });
-    setTasks(updated);
+    try {
+      const updated = await api.post<Task[]>("/api/tasks/reorder", { status, ids });
+      setTasks(updated);
+    } catch (err) {
+      // Roll back to server truth if the reorder failed.
+      toast.error((err as Error).message);
+      load();
+    }
   }
 
   function openEditor(t: Task) {

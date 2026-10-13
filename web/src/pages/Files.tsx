@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { useToast } from "@/lib/toast";
 import {
   Button,
   Card,
@@ -181,7 +182,7 @@ export default function Files() {
   const [batchTag, setBatchTag] = useState("");
   const [batchDest, setBatchDest] = useState("");
   const [batchBusy, setBatchBusy] = useState(false);
-  const [error, setError] = useState("");
+  const toast = useToast();
   const [scanning, setScanning] = useState<number | null>(null);
 
   // Resources after applying the file-type filter (root/tag filters are applied
@@ -237,20 +238,25 @@ export default function Files() {
 
   async function addRoot(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
     try {
       await api.post("/api/files/roots", { path: newRoot });
       setNewRoot("");
       loadRoots();
+      toast.success("Managed Root added");
     } catch (err) {
-      setError((err as Error).message);
+      toast.error((err as Error).message);
     }
   }
 
   async function removeRoot(id: number) {
-    await api.del(`/api/files/roots/${id}`);
-    loadRoots();
-    loadResources();
+    try {
+      await api.del(`/api/files/roots/${id}`);
+      loadRoots();
+      loadResources();
+      toast.success("Managed Root removed");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   async function scan(id: number) {
@@ -258,6 +264,9 @@ export default function Files() {
     try {
       await api.post(`/api/files/roots/${id}/scan`);
       loadResources();
+      toast.success("Rescan complete");
+    } catch (err) {
+      toast.error((err as Error).message);
     } finally {
       setScanning(null);
     }
@@ -265,45 +274,74 @@ export default function Files() {
 
   async function addTag(r: Resource, tag: string) {
     if (!tag.trim()) return;
-    const updated = await api.post<Resource>(`/api/files/resources/${r.id}/tags`, { tag });
-    setSelected(updated);
-    loadResources();
+    try {
+      const updated = await api.post<Resource>(`/api/files/resources/${r.id}/tags`, { tag });
+      setSelected(updated);
+      loadResources();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
   async function removeTag(r: Resource, tag: string) {
-    const updated = await api.del<Resource>(
-      `/api/files/resources/${r.id}/tags/${encodeURIComponent(tag)}`,
-    );
-    setSelected(updated);
-    loadResources();
+    try {
+      const updated = await api.del<Resource>(
+        `/api/files/resources/${r.id}/tags/${encodeURIComponent(tag)}`,
+      );
+      setSelected(updated);
+      loadResources();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
   async function saveNote(r: Resource, note: string) {
-    const updated = await api.put<Resource>(`/api/files/resources/${r.id}/note`, { note });
-    setSelected(updated);
-    loadResources();
+    try {
+      const updated = await api.put<Resource>(`/api/files/resources/${r.id}/note`, { note });
+      setSelected(updated);
+      loadResources();
+      toast.success("Note saved");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
   async function clearMissing(r: Resource) {
-    await api.del(`/api/files/resources/${r.id}`);
-    setSelected(null);
-    loadResources();
+    try {
+      await api.del(`/api/files/resources/${r.id}`);
+      setSelected(null);
+      loadResources();
+      toast.success("Missing Resource cleared");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
   async function rename(r: Resource, name: string) {
-    const updated = await api.post<Resource>(`/api/files/resources/${r.id}/rename`, { name });
-    setSelected(updated);
-    loadResources();
+    try {
+      const updated = await api.post<Resource>(`/api/files/resources/${r.id}/rename`, { name });
+      setSelected(updated);
+      loadResources();
+      toast.success("File renamed");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
   async function move(r: Resource, dest: string) {
     try {
       const updated = await api.post<Resource>(`/api/files/resources/${r.id}/move`, { dest });
       setSelected(updated);
       loadResources();
+      toast.success("File moved");
     } catch (err) {
-      setError((err as Error).message);
+      toast.error((err as Error).message);
     }
   }
   async function deleteFile(r: Resource) {
-    await api.del(`/api/files/resources/${r.id}/file`);
-    setSelected(null);
-    loadResources();
+    try {
+      await api.del(`/api/files/resources/${r.id}/file`);
+      setSelected(null);
+      loadResources();
+      toast.success("File deleted");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   // ---- Multi-select / batch operations -------------------------------------
@@ -339,14 +377,14 @@ export default function Files() {
     const ids = checkedIDs(checkedResources());
     if (!tag || ids.length === 0) return;
     setBatchBusy(true);
-    setError("");
     try {
       // One request tags every selected resource server-side.
       await api.post("/api/files/resources/batch/tag", { ids, tag });
       setBatchTag("");
       await loadResources();
+      toast.success(`Tagged ${ids.length} Resource(s)`);
     } catch (err) {
-      setError((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBatchBusy(false);
     }
@@ -372,7 +410,6 @@ export default function Files() {
     const ids = checkedIDs(checkedResources().filter((r) => r.state !== "missing"));
     if (ids.length === 0) return;
     setBatchBusy(true);
-    setError("");
     try {
       // One request moves every selected file into the destination directory.
       const res = await api.post<{ failed?: string[] }>(
@@ -383,10 +420,12 @@ export default function Files() {
       if (selected && checked.has(selected.id)) setSelected(null);
       await loadResources();
       if (res?.failed?.length) {
-        setError(`Could not move ${res.failed.length} file(s).`);
+        toast.error(`Could not move ${res.failed.length} file(s).`);
+      } else {
+        toast.success(`Moved ${ids.length} file(s)`);
       }
     } catch (err) {
-      setError((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBatchBusy(false);
     }
@@ -407,7 +446,6 @@ export default function Files() {
     )
       return;
     setBatchBusy(true);
-    setError("");
     try {
       // One request deletes the bytes and clears the index rows server-side.
       const res = await api.post<{ failed?: string[] }>(
@@ -418,10 +456,12 @@ export default function Files() {
       clearChecked();
       await loadResources();
       if (res?.failed?.length) {
-        setError(`Could not delete ${res.failed.length} file(s).`);
+        toast.error(`Could not delete ${res.failed.length} file(s).`);
+      } else {
+        toast.success(`Deleted ${ids.length} item(s)`);
       }
     } catch (err) {
-      setError((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBatchBusy(false);
     }
@@ -451,11 +491,6 @@ export default function Files() {
             <FolderPlus size={15} /> Add root
           </Button>
         </form>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
         <div className="space-y-1.5">
           {roots.map((r) => (
             <div

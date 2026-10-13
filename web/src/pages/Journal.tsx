@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { useToast } from "@/lib/toast";
 import { Button, Card, Textarea, Input, EmptyState, Skeleton } from "@/components/ui";
 import { BookText, Check, Copy, Search, X } from "lucide-react";
 
@@ -12,6 +13,7 @@ export default function Journal() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const toast = useToast();
   const activeQuery = useRef("");
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -23,6 +25,8 @@ export default function Journal() {
       : "/api/journal/entries";
     try {
       setEntries(await api.get<Entry[]>(path));
+    } catch (err) {
+      toast.error((err as Error).message);
     } finally {
       setLoading(false);
     }
@@ -41,8 +45,10 @@ export default function Journal() {
       setCopiedId(entry.id);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopiedId(null), 1500);
+      toast.success("Copied to clipboard");
     } catch {
-      // Clipboard unavailable (e.g. non-secure context); ignore.
+      // Clipboard unavailable (e.g. non-secure context).
+      toast.error("Clipboard unavailable");
     }
   }
 
@@ -54,6 +60,9 @@ export default function Journal() {
       await api.post("/api/journal/entries", { body });
       setBody("");
       await load(activeQuery.current);
+      toast.success("Entry appended");
+    } catch (err) {
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
     }

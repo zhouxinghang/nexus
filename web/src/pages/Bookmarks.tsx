@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { useToast } from "@/lib/toast";
 import {
   Button,
   Card,
@@ -120,6 +121,7 @@ export default function Bookmarks() {
   const [checkingAll, setCheckingAll] = useState(false);
   const [checkingId, setCheckingId] = useState<number | null>(null);
   const [editing, setEditing] = useState<Bookmark | null>(null);
+  const toast = useToast();
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function load() {
@@ -147,15 +149,23 @@ export default function Bookmarks() {
       setUrl("");
       setIcon("");
       await load();
+      toast.success("Bookmark added");
+    } catch (err) {
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
     }
   }
 
   async function remove(id: number) {
-    await api.del(`/api/bookmarks/${id}`);
-    setEditing((e) => (e && e.id === id ? null : e));
-    load();
+    try {
+      await api.del(`/api/bookmarks/${id}`);
+      setEditing((e) => (e && e.id === id ? null : e));
+      load();
+      toast.success("Bookmark deleted");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   async function checkOne(id: number) {
@@ -163,6 +173,8 @@ export default function Bookmarks() {
     try {
       const updated = await api.post<Bookmark>(`/api/bookmarks/${id}/check`, null);
       setBookmarks((prev) => prev.map((b) => (b.id === id ? updated : b)));
+    } catch (err) {
+      toast.error((err as Error).message);
     } finally {
       setCheckingId(null);
     }
@@ -172,6 +184,9 @@ export default function Bookmarks() {
     setCheckingAll(true);
     try {
       setBookmarks(await api.post<Bookmark[]>("/api/bookmarks/check", null));
+      toast.success("Checked all bookmarks");
+    } catch (err) {
+      toast.error((err as Error).message);
     } finally {
       setCheckingAll(false);
     }
@@ -335,6 +350,7 @@ function BookmarkEditor({
   const [url, setUrl] = useState(bookmark.url);
   const [icon, setIcon] = useState(bookmark.icon);
   const [saving, setSaving] = useState(false);
+  const toast = useToast();
 
   const dirty =
     name !== bookmark.name || url !== bookmark.url || icon !== bookmark.icon;
@@ -350,6 +366,9 @@ function BookmarkEditor({
       });
       onSaved(updated);
       onClose();
+      toast.success("Bookmark updated");
+    } catch (err) {
+      toast.error((err as Error).message);
     } finally {
       setSaving(false);
     }
