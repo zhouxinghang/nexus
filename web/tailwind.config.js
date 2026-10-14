@@ -49,8 +49,14 @@ export default {
         sm: "calc(var(--radius) - 6px)",
       },
       fontFamily: {
-        sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+        sans: [
+          "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"',
+          "Roboto", "Helvetica", "Arial", "sans-serif",
+        ],
+        mono: [
+          "ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas",
+          '"Liberation Mono"', '"Courier New"', "monospace",
+        ],
       },
       boxShadow: {
         subtle:

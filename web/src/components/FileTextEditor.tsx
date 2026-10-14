@@ -74,7 +74,7 @@ export default function FileTextEditor({
           }),
           EditorView.theme({
             "&": { height: "100%", color: "hsl(var(--foreground))", backgroundColor: "hsl(var(--background))" },
-            ".cm-scroller": { overflow: "auto", fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: "14px", lineHeight: "1.7" },
+            ".cm-scroller": { overflow: "auto", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "14px", lineHeight: "1.7" },
             "@media (max-width: 640px)": { ".cm-scroller": { fontSize: "16px" } },
             ".cm-content": { padding: "16px 0", caretColor: "hsl(var(--primary))" },
             ".cm-line": { padding: "0 16px" },

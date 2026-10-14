@@ -76,6 +76,22 @@ bcrypt.GenerateFromPassword([]byte("your-password"), bcrypt.DefaultCost)
 cd web && npm run dev   # proxies /api to http://localhost:8080
 ```
 
+## Page loading and static assets
+
+The UI uses system sans-serif and monospace fonts, with no external font requests.
+Each tool and the authenticated Shell load on demand; route loading and failures
+leave navigation available, with a reload action if a chunk cannot be fetched.
+
+`npm run build` also generates gzip siblings for HTML, JavaScript, CSS and SVG.
+The native Go process serves these precompressed files when the browser accepts
+gzip, retaining the original content type and uncompressed fallback. Hash-named
+assets are cached for one year (`immutable`); HTML is revalidated on every use.
+Missing asset URLs return 404 rather than SPA HTML. Byte-range requests use the
+original representation.
+
+After frontend changes, rebuild **and restart the Go process**: the SPA and its
+gzip files are embedded at Go compile time.
+
 ## Host disk I/O statistics
 
 Servers' **Disk I/O** card shows Host-wide read/write throughput (KB/s, MB/s)
@@ -159,3 +175,7 @@ cd web
 npx playwright install chromium   # once, if Chromium is not installed
 npm test
 ```
+
+`npm test` runs the existing development-server interaction suite followed by
+production-bundle loading tests (including external-font independence, lazy
+routes and lossless gzip output). Run just the latter with `npm run test:production`.

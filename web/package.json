@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/compress-assets.mjs",
     "preview": "vite preview",
-    "test": "playwright test"
+    "test": "playwright test && npm run test:production",
+    "test:production": "playwright test --config playwright.production.config.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

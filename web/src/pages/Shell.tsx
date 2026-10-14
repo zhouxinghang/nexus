@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { Button } from "@/components/ui";
+import { PageContent } from "@/components/PageContent";
 import {
   LayoutDashboard,
   FileText,
@@ -282,7 +283,7 @@ export default function Shell() {
               wide ? "max-w-screen-2xl" : "max-w-6xl",
             )}
           >
-            <Outlet />
+            <PageContent><Outlet /></PageContent>
           </div>
         </main>
       </div>
