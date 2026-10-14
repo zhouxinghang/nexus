@@ -199,6 +199,10 @@ function SidebarContent({
 
 const COLLAPSE_KEY = "nexus-sidebar-collapsed";
 
+// Routes whose content is a wide data table get a roomier content column than
+// the default max-w-6xl.
+const WIDE_ROUTES = ["/files"];
+
 export default function Shell() {
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
@@ -206,6 +210,7 @@ export default function Shell() {
     return window.localStorage.getItem(COLLAPSE_KEY) === "1";
   });
   const location = useLocation();
+  const wide = WIDE_ROUTES.some((p) => location.pathname.startsWith(p));
 
   // Close the mobile drawer whenever the route changes.
   useEffect(() => {
@@ -271,7 +276,12 @@ export default function Shell() {
         </header>
 
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-6xl animate-fade-in p-5 sm:p-8">
+          <div
+            className={cn(
+              "mx-auto animate-fade-in p-5 sm:p-8",
+              wide ? "max-w-screen-2xl" : "max-w-6xl",
+            )}
+          >
             <Outlet />
           </div>
         </main>

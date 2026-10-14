@@ -748,10 +748,13 @@ export default function Files() {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full border-separate border-spacing-0 text-sm">
+              {/* Fixed layout so long names/paths truncate inside the Name
+                  column instead of widening the table and pushing Tags off
+                  the edge. Header widths define the columns. */}
+              <table className="w-full min-w-[36rem] table-fixed border-separate border-spacing-0 text-sm">
                 <thead>
                   <tr className="text-left text-xs text-muted-foreground">
-                    <th className="sticky top-0 z-10 w-10 border-b border-border bg-card/95 px-4 py-2.5 backdrop-blur">
+                    <th className="sticky top-0 z-10 w-12 border-b border-border bg-card/95 px-4 py-2.5 backdrop-blur">
                       <input
                         type="checkbox"
                         aria-label="Select all"
@@ -775,13 +778,13 @@ export default function Files() {
                     <th className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur">
                       Name
                     </th>
-                    <th className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-2.5 text-right font-medium backdrop-blur">
+                    <th className="sticky top-0 z-10 w-24 border-b border-border bg-card/95 px-4 py-2.5 text-right font-medium backdrop-blur">
                       Size
                     </th>
-                    <th className="sticky top-0 z-10 hidden border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur sm:table-cell">
+                    <th className="sticky top-0 z-10 hidden w-32 border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur sm:table-cell">
                       Modified
                     </th>
-                    <th className="sticky top-0 z-10 border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur">
+                    <th className="sticky top-0 z-10 w-[30%] border-b border-border bg-card/95 px-4 py-2.5 font-medium backdrop-blur">
                       Tags
                     </th>
                   </tr>
@@ -955,17 +958,17 @@ function ResourceRow({
           </div>
         </div>
       </td>
-      <td className="border-b border-border/60 px-4 py-2.5 text-right tabular-nums text-muted-foreground">
+      <td className="whitespace-nowrap border-b border-border/60 px-4 py-2.5 text-right tabular-nums text-muted-foreground">
         {resource.is_dir ? "—" : bytes(resource.size)}
       </td>
-      <td className="hidden border-b border-border/60 px-4 py-2.5 tabular-nums text-muted-foreground sm:table-cell">
+      <td className="hidden truncate border-b border-border/60 px-4 py-2.5 tabular-nums text-muted-foreground sm:table-cell">
         {modified(resource.modified_at)}
       </td>
       <td className="border-b border-border/60 px-4 py-2.5">
         <div className="flex flex-wrap gap-1">
           {resource.tags.map((t) => (
-            <Badge key={t} variant="primary">
-              {t}
+            <Badge key={t} variant="primary" className="max-w-full" title={t}>
+              <span className="truncate">{t}</span>
             </Badge>
           ))}
         </div>
