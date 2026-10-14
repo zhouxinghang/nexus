@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"nexus/internal/db/dbgen"
@@ -22,6 +20,7 @@ func (s *Server) registerFileRoutes(r chi.Router) {
 	r.Get("/files/roots", s.handleListRoots)
 	r.Delete("/files/roots/{id}", s.handleDeleteRoot)
 	r.Post("/files/roots/{id}/scan", s.handleScanRoot)
+	r.Get("/files/roots/{id}/scan", s.handleScanStatus)
 
 	// Resources
 	r.Get("/files/resources", s.handleListResources)
@@ -53,6 +52,14 @@ func (s *Server) registerFileRoutes(r chi.Router) {
 
 // --- response shapes ---
 
+// resourcePage is the Files offset envelope. It extends the shared offset
+// page with per-kind counts so the UI's type-filter chips can show totals for
+// the whole result set rather than only the loaded rows.
+type resourcePage struct {
+	offsetPage[resourceResponse]
+	Kinds map[string]int64 `json:"kinds"`
+}
+
 type rootResponse struct {
 	ID        int64     `json:"id"`
 	Path      string    `json:"path"`
@@ -68,6 +75,7 @@ type resourceResponse struct {
 	IsDir      bool       `json:"is_dir"`
 	ModifiedAt *time.Time `json:"modified_at"`
 	State      string     `json:"state"`
+	Kind       string     `json:"kind"`
 	Note       string     `json:"note"`
 	Tags       []string   `json:"tags"`
 	CreatedAt  time.Time  `json:"created_at"`
@@ -117,6 +125,7 @@ func newResourceResponse(res dbgen.Resource, tags []string) resourceResponse {
 		IsDir:      res.IsDir,
 		ModifiedAt: res.ModifiedAt,
 		State:      string(res.State),
+		Kind:       res.Kind,
 		Note:       res.Note,
 		Tags:       tags,
 		CreatedAt:  res.CreatedAt,
@@ -186,65 +195,9 @@ func (s *Server) handleDeleteRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Scanning ---
-
-func (s *Server) handleScanRoot(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	root, err := s.queries.GetManagedRoot(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "root not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "could not load root")
-		return
-	}
-
-	// Walk the real filesystem under the root.
-	files, err := s.host.Walk(root.Path)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not scan root")
-		return
-	}
-
-	seen := map[string]bool{}
-	for _, f := range files {
-		seen[f.Path] = true
-		mod := f.ModifiedAt
-		_, err := s.queries.UpsertResource(r.Context(), dbgen.UpsertResourceParams{
-			RootID:     root.ID,
-			Path:       f.Path,
-			Name:       f.Name,
-			Size:       f.Size,
-			IsDir:      f.IsDir,
-			ModifiedAt: &mod,
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not index file")
-			return
-		}
-	}
-
-	// Any present Resource under this root not seen on disk → mark Missing.
-	existing, err := s.queries.ListResourceIDsByRoot(r.Context(), root.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not reconcile root")
-		return
-	}
-	for _, e := range existing {
-		if !seen[e.Path] {
-			if err := s.queries.MarkResourceMissing(r.Context(), e.ID); err != nil {
-				writeError(w, http.StatusInternalServerError, "could not mark missing")
-				return
-			}
-		}
-	}
-
-	s.writeResourcePage(w, r, pgtype.Int8{Int64: root.ID, Valid: true})
-}
+//
+// The scan implementation (start/status handlers, the background runner, and
+// its batching/diffing helpers) lives in files_scan.go.
 
 // --- Resources ---
 
@@ -255,9 +208,9 @@ const (
 )
 
 // handleListResources returns one offset page of Resources, ordered by path,
-// for the optional root_id / dir prefix / tag filters:
-// {"items": [...], "total": n, "limit": n, "offset": n}. Every filter, the
-// slice, and the count run in SQL.
+// for the optional root_id / dir prefix / tag / kind filters:
+// {"items": [...], "total": n, "limit": n, "offset": n, "kinds": {...}}. Every
+// filter, the slice, the count, and the per-kind counts run in SQL.
 //
 // Offset (not keyset) is a deliberate first pass: the optional prefix + tag
 // combinations make a stable keyset cursor awkward, and offset is adequate
@@ -278,7 +231,9 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeResourcePage writes the paged resource list for the request's dir /
-// tag / limit / offset params, scoped to rootID when it is set.
+// tag / kind / limit / offset params, scoped to rootID when it is set. The
+// envelope carries per-kind counts (for the other active filters) so the UI's
+// type chips reflect the full result set, not just the loaded page.
 func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootID pgtype.Int8) {
 	q := r.URL.Query()
 	limit, err := parseLimit(q, resourcePageDefault, resourcePageMax)
@@ -291,23 +246,43 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 		writeError(w, http.StatusBadRequest, "invalid offset")
 		return
 	}
-	var dir, tag pgtype.Text
+	var dir, tag, kind pgtype.Text
 	if v := q.Get("dir"); v != "" {
 		dir = pgtype.Text{String: likePrefix(v), Valid: true}
 	}
 	if v := q.Get("tag"); v != "" {
 		tag = pgtype.Text{String: v, Valid: true}
 	}
+	if v := q.Get("kind"); v != "" {
+		if !validKind(v) {
+			writeError(w, http.StatusBadRequest, "invalid kind")
+			return
+		}
+		kind = pgtype.Text{String: v, Valid: true}
+	}
 
 	total, err := s.queries.CountResources(r.Context(), dbgen.CountResourcesParams{
-		RootID: rootID, DirPattern: dir, Tag: tag,
+		RootID: rootID, DirPattern: dir, Tag: tag, Kind: kind,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not count resources")
 		return
 	}
-	resources, err := s.queries.ListResourcesPage(r.Context(), dbgen.ListResourcesPageParams{
+	// Per-kind counts ignore the kind filter so every chip stays visible and
+	// clickable while one kind is selected.
+	kindRows, err := s.queries.CountResourcesByKind(r.Context(), dbgen.CountResourcesByKindParams{
 		RootID: rootID, DirPattern: dir, Tag: tag,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not count resources by kind")
+		return
+	}
+	kinds := map[string]int64{}
+	for _, kr := range kindRows {
+		kinds[kr.Kind] = kr.Count
+	}
+	resources, err := s.queries.ListResourcesPage(r.Context(), dbgen.ListResourcesPageParams{
+		RootID: rootID, DirPattern: dir, Tag: tag, Kind: kind,
 		PageLimit: limit, PageOffset: offset,
 	})
 	if err != nil {
@@ -319,10 +294,23 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 		writeError(w, http.StatusInternalServerError, "could not load tags")
 		return
 	}
-	writeJSON(w, http.StatusOK, offsetPage[resourceResponse]{
-		Items: items, Total: total, Limit: limit, Offset: offset,
+	writeJSON(w, http.StatusOK, resourcePage{
+		offsetPage: offsetPage[resourceResponse]{
+			Items: items, Total: total, Limit: limit, Offset: offset,
+		},
+		Kinds: kinds,
 	})
 }
+
+// resourceKinds is the fixed Files taxonomy, matching the resource_kind SQL
+// function and the client's chips. Used to validate the ?kind= filter.
+var resourceKinds = map[string]bool{
+	"folder": true, "document": true, "image": true, "video": true,
+	"audio": true, "spreadsheet": true, "presentation": true, "code": true,
+	"archive": true, "other": true,
+}
+
+func validKind(k string) bool { return resourceKinds[k] }
 
 func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)

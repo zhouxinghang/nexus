@@ -26,6 +26,48 @@ SET root_id     = EXCLUDED.root_id,
     updated_at  = now()
 RETURNING *;
 
+-- name: BulkUpsertResources :exec
+-- Upserts many Resources in a single round-trip from parallel arrays. A plain
+-- scan otherwise fans out to one INSERT per file; collapsing the changed rows
+-- into one statement is the difference between thousands of round-trips and one
+-- (the FileBrowser-Quantum "batch the index writes" idea, over Postgres). The
+-- arrays are positionally aligned and zipped back together by ordinality:
+-- paths[i] carries names[i], sizes[i], etc.
+INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, state, updated_at)
+SELECT sqlc.arg(root_id)::bigint, p.path, n.name, s.size, d.is_dir, m.modified_at, 'present', now()
+FROM unnest(sqlc.arg(paths)::text[]) WITH ORDINALITY AS p(path, i)
+JOIN unnest(sqlc.arg(names)::text[]) WITH ORDINALITY AS n(name, i) USING (i)
+JOIN unnest(sqlc.arg(sizes)::bigint[]) WITH ORDINALITY AS s(size, i) USING (i)
+JOIN unnest(sqlc.arg(is_dirs)::boolean[]) WITH ORDINALITY AS d(is_dir, i) USING (i)
+JOIN unnest(sqlc.arg(modified_ats)::timestamptz[]) WITH ORDINALITY AS m(modified_at, i) USING (i)
+ON CONFLICT (path) DO UPDATE
+SET root_id     = EXCLUDED.root_id,
+    name        = EXCLUDED.name,
+    size        = EXCLUDED.size,
+    is_dir      = EXCLUDED.is_dir,
+    modified_at = EXCLUDED.modified_at,
+    state       = 'present',
+    updated_at  = now();
+
+-- name: MarkResourcesMissingUnderRoot :execrows
+-- Reconciles a root in one statement: every present Resource whose path wasn't
+-- seen on disk this scan is marked missing. Replaces per-row MarkResourceMissing
+-- calls, and returns the number of rows transitioned so a scan can report how
+-- many Resources vanished. An empty seen set (empty directory) marks every
+-- present row missing, since `path <> ALL('{}')` is true for every path.
+UPDATE resources
+SET state = 'missing', updated_at = now()
+WHERE root_id = sqlc.arg(root_id)::bigint
+  AND state <> 'missing'
+  AND path <> ALL(sqlc.arg(seen_paths)::text[]);
+
+-- name: ListResourceDigestByRoot :many
+-- The present Resources' change-detection digest for a root. A scan loads these
+-- once, then skips re-upserting any file whose size and modified_at are
+-- unchanged — the modtime-based "quick scan" that makes rescans cheap.
+SELECT path, size, modified_at FROM resources
+WHERE root_id = $1 AND state = 'present';
+
 -- name: GetResource :one
 SELECT * FROM resources WHERE id = $1;
 
@@ -38,12 +80,14 @@ ORDER BY path ASC;
 SELECT * FROM resources WHERE path = $1;
 
 -- name: ListResourcesPage :many
--- One page of Resources under the optional root / directory-prefix / tag
--- filters, ordered by path. The prefix is an already-escaped LIKE pattern
--- (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL.
+-- One page of Resources under the optional root / directory-prefix / tag /
+-- kind filters, ordered by path. The prefix is an already-escaped LIKE pattern
+-- (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL; kind
+-- matches the generated resource.kind column.
 SELECT * FROM resources r
 WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
   AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(kind)::text IS NULL OR r.kind = sqlc.narg(kind)::text)
   AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
         WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text))
@@ -55,9 +99,22 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 SELECT count(*) FROM resources r
 WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
   AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(kind)::text IS NULL OR r.kind = sqlc.narg(kind)::text)
   AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
         WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text));
+
+-- name: CountResourcesByKind :many
+-- Per-kind totals for the root / directory-prefix / tag filters, deliberately
+-- ignoring the kind filter itself so the UI's type chips always show how many
+-- Resources of each kind are reachable within the other active filters.
+SELECT r.kind, count(*) AS count FROM resources r
+WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
+  AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
+        SELECT 1 FROM resource_tags rt
+        WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text))
+GROUP BY r.kind;
 
 -- name: ResourceSummary :one
 SELECT count(*)                                   AS total,

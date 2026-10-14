@@ -99,22 +99,57 @@ type ContainerDetail struct {
 	Mounts    []Mount       `json:"mounts"`
 }
 
+// NetRate is network throughput over the window since an earlier reading,
+// summed across the interfaces that count toward the Host (see countedNIC).
+type NetRate struct {
+	RxBytes   float64 `json:"rx_bytes_per_sec"`
+	TxBytes   float64 `json:"tx_bytes_per_sec"`
+	RxPackets float64 `json:"rx_packets_per_sec"`
+	TxPackets float64 `json:"tx_packets_per_sec"`
+}
+
+// Pressure is Linux pressure-stall information (PSI): the percentage of the
+// last 10 seconds (avg10) in which some / all non-idle tasks were stalled
+// waiting on a resource. CPU "full" is undefined system-wide, so it's omitted.
+type Pressure struct {
+	CPUSome    float64 `json:"cpu_some"`
+	MemorySome float64 `json:"memory_some"`
+	MemoryFull float64 `json:"memory_full"`
+	IOSome     float64 `json:"io_some"`
+	IOFull     float64 `json:"io_full"`
+}
+
+// SelfUsage is the Nexus process's own footprint, so the monitor's overhead
+// is visible next to the Host it measures.
+type SelfUsage struct {
+	CPU    float64 `json:"cpu"`     // percent of one core, like Process.CPU
+	MemRSS uint64  `json:"mem_rss"` // bytes
+}
+
 // Vitals is a single point-in-time reading of the Host's health.
 type Vitals struct {
 	CPUPercent float64 `json:"cpu_percent"`
+	CPUCores   int     `json:"cpu_cores"` // logical CPUs
 	MemTotal   uint64  `json:"mem_total"`
-	MemUsed    uint64  `json:"mem_used"`
+	// MemUsed is Total − Available: memory that can't be reclaimed without
+	// swapping. Droppable page cache doesn't count as used.
+	MemUsed uint64 `json:"mem_used"`
 	// DiskTotal/DiskUsed are the root filesystem, kept for the history chart.
-	DiskTotal  uint64      `json:"disk_total"`
-	DiskUsed   uint64      `json:"disk_used"`
-	Disks      []DiskUsage `json:"disks"` // per-mount, current snapshot only
-	NetRx      uint64      `json:"net_rx"`
-	NetTx      uint64      `json:"net_tx"`
-	Load1      float64     `json:"load1"`
-	Load5      float64     `json:"load5"`
-	Load15     float64     `json:"load15"`
-	UptimeSecs uint64      `json:"uptime_secs"`
-	TopProcs   []Process   `json:"top_procs"`
+	DiskTotal uint64      `json:"disk_total"`
+	DiskUsed  uint64      `json:"disk_used"`
+	Disks     []DiskUsage `json:"disks"` // per-mount, current snapshot only
+	// NetRx/NetTx are since-boot byte counters over the non-loopback
+	// interfaces; NetRate is the current throughput, nil on the first reading.
+	NetRx      uint64     `json:"net_rx"`
+	NetTx      uint64     `json:"net_tx"`
+	NetRate    *NetRate   `json:"net_rate"`
+	Load1      float64    `json:"load1"`
+	Load5      float64    `json:"load5"`
+	Load15     float64    `json:"load15"`
+	Pressure   *Pressure  `json:"pressure"` // nil off Linux or with PSI disabled
+	UptimeSecs uint64     `json:"uptime_secs"`
+	Self       *SelfUsage `json:"self"` // nil when unreadable
+	TopProcs   []Process  `json:"top_procs"`
 }
 
 // DockerStatus reports the Docker containers, or that Docker is not enabled.

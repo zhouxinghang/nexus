@@ -40,6 +40,16 @@ operations are confined to inside Managed Roots; a move or rename targeting a
 path outside every Managed Root is rejected.
 _Avoid_: folder, workspace, mount
 
+**Scan**:
+Walking a Managed Root's directory tree and reconciling it with the index:
+new/changed files are upserted (a file is "changed" only if its size or
+modified time differs — unchanged files are skipped), and present Resources no
+longer on disk become Missing. A Scan runs asynchronously in the background so
+the Host never blocks on a large tree: starting one returns a running status
+immediately, and progress (files seen, indexed, removed) is polled until it
+reaches `completed` or `failed`. Only one Scan runs per Managed Root at a time.
+_Avoid_: reindex, sync, crawl, refresh
+
 **Missing** (resource state):
 A Resource whose underlying file has disappeared from disk (deleted by something
 other than Nexus). Kept, not auto-removed, so its tags and notes survive; shown
@@ -49,8 +59,9 @@ _Avoid_: orphaned, stale, dangling
 ### Servers (host monitoring)
 
 **Metric Sample**:
-One timestamped reading of the Host's vitals (CPU, memory, disk, network, load,
-uptime, process list, Docker container states), persisted to build history.
+One timestamped reading of the Host's vitals (CPU, memory, disk, network
+counters and throughput, load, pressure stall on Linux, uptime, Nexus's own
+CPU/memory, process list, Docker container states), persisted to build history.
 _Avoid_: datapoint, stat, reading
 
 ### Tasks

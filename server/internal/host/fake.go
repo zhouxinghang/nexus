@@ -65,11 +65,15 @@ func (f *FakeHost) List(dir string) ([]FileInfo, error) {
 
 func (f *FakeHost) Walk(root string) ([]FileInfo, error) {
 	var out []FileInfo
-	err := filepath.Walk(root, func(path string, fi os.FileInfo, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if fi.IsDir() {
+		if d.IsDir() {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
 			return nil
 		}
 		out = append(out, toFileInfo(path, fi))

@@ -45,14 +45,37 @@ type Resource = {
   is_dir: boolean;
   modified_at: string | null;
   state: "present" | "missing";
+  kind: FileKind;
   note: string;
   tags: string[];
 };
 
-type ResourcePage = { items: Resource[]; total: number; limit: number; offset: number };
+// One Files page: the loaded rows, the server-side totals, and per-kind counts
+// (keyed by FileKind) for the current root/tag filters, which drive the type
+// chips independently of the active kind filter.
+type ResourcePage = {
+  items: Resource[];
+  total: number;
+  limit: number;
+  offset: number;
+  kinds: Record<string, number>;
+};
 
 // Resources per "load more" page.
 const RESOURCE_PAGE = 200;
+
+// Live scan progress reported by the scan status endpoint. A scan is started
+// with POST (202) and polled with GET until it leaves the "running" phase.
+type ScanStatus = {
+  root_id: number;
+  phase: "idle" | "running" | "completed" | "failed";
+  total: number;
+  indexed: number;
+  removed: number;
+  error?: string;
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function bytes(n: number): string {
   const units = ["B", "KB", "MB", "GB"];
@@ -90,8 +113,10 @@ function modified(iso: string | null): string {
 
 /* --------------------------------------------------- File-type filtering */
 
-// A small, Finder/Drive-style taxonomy. Resources carry no mime type from the
-// Host, so we classify client-side by directory flag + lowercase extension.
+// A small, Finder/Drive-style taxonomy. The Host sends no mime type, so the
+// server classifies each Resource (see the resource_kind SQL function) and
+// returns the bucket as `resource.kind`; this type just mirrors those values
+// so the client can label, icon, and filter by them.
 type FileKind =
   | "folder"
   | "document"
@@ -103,49 +128,6 @@ type FileKind =
   | "code"
   | "archive"
   | "other";
-
-// Extensions per kind. Order of the `kinds` array below drives the filter order
-// and the fallback is "other".
-const kindExtensions: Record<Exclude<FileKind, "folder" | "other">, string[]> = {
-  document: ["pdf", "doc", "docx", "txt", "md", "markdown", "rtf", "odt", "pages", "tex", "epub"],
-  image: ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "heic", "heif", "tiff", "tif", "avif"],
-  video: ["mp4", "mov", "avi", "mkv", "webm", "flv", "wmv", "m4v", "mpeg", "mpg", "3gp"],
-  audio: ["mp3", "wav", "flac", "aac", "ogg", "oga", "m4a", "wma", "opus", "aiff"],
-  spreadsheet: ["xls", "xlsx", "csv", "tsv", "ods", "numbers"],
-  presentation: ["ppt", "pptx", "odp", "key"],
-  code: [
-    "js", "jsx", "ts", "tsx", "go", "py", "rb", "php", "java", "kt", "c", "h", "cc",
-    "cpp", "hpp", "cs", "rs", "swift", "sh", "bash", "zsh", "html", "htm", "css",
-    "scss", "sass", "less", "json", "yaml", "yml", "toml", "xml", "sql", "vue",
-    "svelte", "lua", "pl", "r", "dart", "gradle", "ini", "conf", "env",
-  ],
-  archive: ["zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "7z", "zst", "lz", "lzma"],
-};
-
-const extToKind = new Map<string, FileKind>();
-for (const [kind, exts] of Object.entries(kindExtensions)) {
-  for (const ext of exts) extToKind.set(ext, kind as FileKind);
-}
-
-// Extension-less filenames that still read as code/config.
-const nameToKind: Record<string, FileKind> = {
-  dockerfile: "code",
-  makefile: "code",
-  rakefile: "code",
-};
-
-function extensionOf(name: string): string {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return ""; // no extension, or a dotfile like ".env"
-  return name.slice(dot + 1).toLowerCase();
-}
-
-function classify(r: Resource): FileKind {
-  if (r.is_dir) return "folder";
-  const named = nameToKind[r.name.toLowerCase()];
-  if (named) return named;
-  return extToKind.get(extensionOf(r.name)) ?? "other";
-}
 
 // Display metadata per kind. Array order == filter order. `chip` is the tinted
 // icon-chip (bg + fg) used everywhere a file icon appears, so a file's type is
@@ -178,9 +160,13 @@ function parentDir(r: Resource): string {
 export default function Files() {
   const [roots, setRoots] = useState<Root[]>([]);
   const [resources, setResources] = useState<Resource[]>([]);
-  // Total Resources matching the root/tag filters on the server; `resources`
-  // holds the pages loaded so far.
+  // Total Resources matching the root/tag/kind filters on the server;
+  // `resources` holds the pages loaded so far.
   const [total, setTotal] = useState(0);
+  // Per-kind counts for the current root/tag filters (ignoring the kind
+  // filter), straight from the server, so the type chips reflect the whole
+  // result set rather than only loaded rows.
+  const [kindCounts, setKindCounts] = useState<Record<string, number>>({});
   const [loadingMore, setLoadingMore] = useState(false);
   const loadedCount = useRef(0);
   const [newRoot, setNewRoot] = useState("");
@@ -194,23 +180,13 @@ export default function Files() {
   const [batchBusy, setBatchBusy] = useState(false);
   const toast = useToast();
   const [scanning, setScanning] = useState<number | null>(null);
+  // Live progress for the scanning root: files seen vs. indexed so far. Null
+  // until the first status poll returns.
+  const [scanProgress, setScanProgress] = useState<ScanStatus | null>(null);
 
-  // Resources after applying the file-type filter (root/tag filters are applied
-  // server-side; the kind filter is client-side since the Host sends no type).
-  function visible(): Resource[] {
-    if (kindFilter === "all") return resources;
-    return resources.filter((r) => classify(r) === kindFilter);
-  }
-
-  // How many resources fall into each kind, for the filter chip counts.
-  function kindCounts(): Map<FileKind, number> {
-    const counts = new Map<FileKind, number>();
-    for (const r of resources) {
-      const k = classify(r);
-      counts.set(k, (counts.get(k) ?? 0) + 1);
-    }
-    return counts;
-  }
+  // Across all kinds, for the "All" chip — the sum of the server's per-kind
+  // counts under the current root/tag filters.
+  const totalAcrossKinds = Object.values(kindCounts).reduce((a, b) => a + b, 0);
 
   async function loadRoots() {
     setRoots(await api.get<Root[]>("/api/files/roots"));
@@ -219,6 +195,7 @@ export default function Files() {
     const params = new URLSearchParams();
     if (rootFilter !== "") params.set("root_id", String(rootFilter));
     if (tagFilter) params.set("tag", tagFilter);
+    if (kindFilter !== "all") params.set("kind", kindFilter);
     params.set("offset", String(offset));
     params.set("limit", String(limit));
     return `/api/files/resources?${params}`;
@@ -233,6 +210,7 @@ export default function Files() {
       loadedCount.current = page.items.length;
       setResources(page.items);
       setTotal(page.total);
+      setKindCounts(page.kinds);
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -249,6 +227,7 @@ export default function Files() {
         return next;
       });
       setTotal(page.total);
+      setKindCounts(page.kinds);
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -261,7 +240,9 @@ export default function Files() {
   }, []);
   useEffect(() => {
     loadResources(true);
-  }, [rootFilter, tagFilter]);
+    // Refetch from the top whenever any server-side filter changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootFilter, tagFilter, kindFilter]);
 
   // Drop checked ids that no longer exist in the current resource set so the
   // batch bar's count always matches reality after loads/deletes.
@@ -302,16 +283,36 @@ export default function Files() {
     }
   }
 
+  // scan starts a background scan, then polls the status endpoint until it
+  // finishes. The scan runs server-side off the request, so a huge directory
+  // no longer holds one long request open; the button stays "scanning" and
+  // shows live progress until the backend reports done.
   async function scan(id: number) {
     setScanning(id);
+    setScanProgress(null);
     try {
-      await api.post(`/api/files/roots/${id}/scan`);
+      const started = await api.post<ScanStatus>(`/api/files/roots/${id}/scan`);
+      let status = started;
+      setScanProgress(started);
+      while (status.phase === "running") {
+        await sleep(400);
+        status = await api.get<ScanStatus>(`/api/files/roots/${id}/scan`);
+        setScanProgress(status);
+      }
+      if (status.phase === "failed") {
+        throw new Error(status.error || "scan failed");
+      }
       loadResources();
-      toast.success("Rescan complete");
+      const summary =
+        status.removed > 0
+          ? `Rescan complete — ${status.indexed} indexed, ${status.removed} missing`
+          : `Rescan complete — ${status.indexed} indexed`;
+      toast.success(summary);
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
       setScanning(null);
+      setScanProgress(null);
     }
   }
 
@@ -388,8 +389,8 @@ export default function Files() {
   }
 
   // ---- Multi-select / batch operations -------------------------------------
-  // `checked` holds resource ids. We keep it pruned to currently-visible rows so
-  // the batch bar never acts on files hidden by a filter the user forgot about.
+  // `checked` holds resource ids. All loaded rows are already server-filtered
+  // by root/tag/kind, so the batch bar acts exactly on what the Owner sees.
   function toggleChecked(id: number) {
     setChecked((prev) => {
       const next = new Set(prev);
@@ -401,14 +402,13 @@ export default function Files() {
     setChecked(new Set());
   }
   function toggleAllVisible() {
-    const vis = visible();
-    const allOn = vis.length > 0 && vis.every((r) => checked.has(r.id));
-    setChecked(allOn ? new Set() : new Set(vis.map((r) => r.id)));
+    const allOn = resources.length > 0 && resources.every((r) => checked.has(r.id));
+    setChecked(allOn ? new Set() : new Set(resources.map((r) => r.id)));
   }
 
   // The checked resources, resolved against the current list and in table order.
   function checkedResources(): Resource[] {
-    return visible().filter((r) => checked.has(r.id));
+    return resources.filter((r) => checked.has(r.id));
   }
   // Just the checked ids, for the single-request batch endpoints.
   function checkedIDs(resources: Resource[]): number[] {
@@ -541,11 +541,17 @@ export default function Files() {
               className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
             >
               <span className="truncate font-mono text-xs">{r.path}</span>
-              <div className="flex shrink-0 gap-1">
+              <div className="flex shrink-0 items-center gap-2">
+                {scanning === r.id && scanProgress && (
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {scanProgress.indexed}/{scanProgress.total}
+                  </span>
+                )}
                 <Button
                   size="sm"
                   variant="outline"
                   loading={scanning === r.id}
+                  disabled={scanning !== null}
                   onClick={() => scan(r.id)}
                 >
                   <RefreshCw size={13} /> Scan
@@ -608,7 +614,7 @@ export default function Files() {
         </Select>
       </div>
 
-      {resources.length > 0 && (
+      {totalAcrossKinds > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-xs font-medium text-muted-foreground">
             Type:
@@ -616,29 +622,26 @@ export default function Files() {
           <TypeChip
             active={kindFilter === "all"}
             onClick={() => setKindFilter("all")}
-            count={resources.length}
+            count={totalAcrossKinds}
           >
             All
           </TypeChip>
-          {(() => {
-            const counts = kindCounts();
-            return kinds.map((k) => {
-              const count = counts.get(k.key) ?? 0;
-              if (count === 0) return null;
-              const Icon = k.icon;
-              return (
-                <TypeChip
-                  key={k.key}
-                  active={kindFilter === k.key}
-                  onClick={() => setKindFilter(k.key)}
-                  count={count}
-                  icon={<Icon size={13} />}
-                >
-                  {k.label}
-                </TypeChip>
-              );
-            });
-          })()}
+          {kinds.map((k) => {
+            const count = kindCounts[k.key] ?? 0;
+            if (count === 0) return null;
+            const Icon = k.icon;
+            return (
+              <TypeChip
+                key={k.key}
+                active={kindFilter === k.key}
+                onClick={() => setKindFilter(k.key)}
+                count={count}
+                icon={<Icon size={13} />}
+              >
+                {k.label}
+              </TypeChip>
+            );
+          })}
         </div>
       )}
 
@@ -721,17 +724,17 @@ export default function Files() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="overflow-hidden p-0 lg:col-span-2">
-          {visible().length === 0 ? (
+          {resources.length === 0 ? (
             <EmptyState
               icon={Search}
               title="No matches"
               description={
-                resources.length === 0
+                totalAcrossKinds === 0
                   ? "Add a Managed Root above and scan it to index its files."
                   : "No Resources match the current filters. Try clearing them."
               }
               action={
-                resources.length > 0 ? (
+                totalAcrossKinds > 0 ? (
                   <Button
                     size="sm"
                     variant="outline"
@@ -760,15 +763,15 @@ export default function Files() {
                         aria-label="Select all"
                         className="h-4 w-4 cursor-pointer accent-primary align-middle"
                         checked={
-                          visible().length > 0 &&
-                          visible().every((r) => checked.has(r.id))
+                          resources.length > 0 &&
+                          resources.every((r) => checked.has(r.id))
                         }
                         ref={(el) => {
                           if (el) {
-                            const vis = visible();
-                            const some = vis.some((r) => checked.has(r.id));
+                            const some = resources.some((r) => checked.has(r.id));
                             const all =
-                              vis.length > 0 && vis.every((r) => checked.has(r.id));
+                              resources.length > 0 &&
+                              resources.every((r) => checked.has(r.id));
                             el.indeterminate = some && !all;
                           }
                         }}
@@ -790,7 +793,7 @@ export default function Files() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visible().map((r) => (
+                  {resources.map((r) => (
                     <ResourceRow
                       key={r.id}
                       resource={r}
@@ -804,11 +807,10 @@ export default function Files() {
               </table>
             </div>
           )}
-          {resources.length > 0 && (
+          {total > 0 && (
             <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-xs text-muted-foreground">
               <span>
                 Showing {resources.length.toLocaleString()} of {total.toLocaleString()}
-                {kindFilter !== "all" && " (type filter applies to loaded rows)"}
               </span>
               {resources.length < total ? (
                 <Button variant="outline" size="xs" loading={loadingMore} onClick={loadMoreResources}>
@@ -895,7 +897,7 @@ function ResourceRow({
   onToggleCheck: (id: number) => void;
   onSelect: (r: Resource) => void;
 }) {
-  const meta = kindMeta(classify(resource));
+  const meta = kindMeta(resource.kind);
   const Icon = meta.icon;
   const dir = parentDir(resource);
   return (
@@ -1002,7 +1004,7 @@ function Detail({
   const [note, setNote] = useState(resource.note);
   const [name, setName] = useState(resource.name);
   const [dest, setDest] = useState("");
-  const meta = kindMeta(classify(resource));
+  const meta = kindMeta(resource.kind);
   const Icon = meta.icon;
 
   return (

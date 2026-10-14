@@ -28,6 +28,9 @@ type Server struct {
 	sampler *sampler.Sampler
 	checker *checker.Checker
 	fetcher checker.Fetcher
+	// scans tracks per-root background scans so the HTTP layer never blocks on
+	// a full directory walk and the UI can poll progress.
+	scans *scanManager
 	// bg tracks fire-and-forget work started by handlers (create-time health
 	// checks and metadata fetches) so tests can wait for it deterministically.
 	bg sync.WaitGroup
@@ -44,6 +47,7 @@ func NewServer(pool *pgxpool.Pool, authn *auth.Authenticator, h host.Host, probe
 		sampler: sampler.New(queries, h),
 		checker: checker.New(queries, prober),
 		fetcher: fetcher,
+		scans:   newScanManager(),
 	}
 }
 

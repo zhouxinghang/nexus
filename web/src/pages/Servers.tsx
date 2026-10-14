@@ -10,6 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
+  ReferenceLine,
 } from "recharts";
 import {
   Server,
@@ -21,6 +22,7 @@ import {
   Clock,
   Container as ContainerIcon,
   ChevronRight,
+  Gauge,
   type LucideIcon,
 } from "lucide-react";
 
@@ -53,22 +55,42 @@ type ContainerDetail = {
   ports: { container_port: string; host_ip: string; host_port: string }[];
   mounts: { type: string; source: string; destination: string; read_only: boolean }[];
 };
+type NetRate = {
+  rx_bytes_per_sec: number;
+  tx_bytes_per_sec: number;
+  rx_packets_per_sec: number;
+  tx_packets_per_sec: number;
+};
+// Linux pressure-stall information, avg10 percentages.
+type Pressure = {
+  cpu_some: number;
+  memory_some: number;
+  memory_full: number;
+  io_some: number;
+  io_full: number;
+};
 type Current = {
   cpu_percent: number;
+  cpu_cores: number;
   mem_total: number;
-  mem_used: number;
+  mem_used: number; // total − available
   disk_total: number;
   disk_used: number;
   disks: Disk[];
   net_rx: number;
   net_tx: number;
+  net_rate: NetRate | null; // null until two readings exist
   load1: number;
   load5: number;
   load15: number;
+  pressure: Pressure | null; // null off Linux
   uptime_secs: number;
+  self: { cpu: number; mem_rss: number } | null; // this Nexus process
   top_procs: Process[];
   docker: { enabled: boolean; containers: Container[] };
 };
+// The nullable fields are absent on samples taken before they were recorded,
+// off Linux (psi_*), or on the Host's first reading (net rates).
 type Sample = {
   taken_at: string;
   cpu_percent: number;
@@ -76,8 +98,14 @@ type Sample = {
   mem_used: number;
   disk_total: number;
   disk_used: number;
-  net_rx: number;
-  net_tx: number;
+  load1: number;
+  net_rx_rate: number | null;
+  net_tx_rate: number | null;
+  psi_cpu_some: number | null;
+  psi_mem_some: number | null;
+  psi_io_some: number | null;
+  self_cpu: number | null;
+  self_rss: number | null;
 };
 
 function bytes(n: number): string {
@@ -91,6 +119,10 @@ function bytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+const rate = (n: number) => `${bytes(n)}/s`;
+const pps = (n: number) => (n < 10 ? n.toFixed(1) : Math.round(n).toLocaleString());
+const round = (n: number | null, digits = 1) => (n == null ? null : Number(n.toFixed(digits)));
+
 function uptime(secs: number): string {
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
@@ -101,19 +133,24 @@ function uptime(secs: number): string {
 function Stat({
   label,
   value,
+  sub,
+  title,
   icon: Icon,
 }: {
   label: string;
   value: string;
+  sub?: string;
+  title?: string;
   icon: LucideIcon;
 }) {
   return (
-    <Card className="p-4">
+    <Card className="p-4" title={title}>
       <div className="flex items-center gap-2 text-muted-foreground">
         <Icon size={15} />
         <span className="text-xs font-medium uppercase tracking-wide">{label}</span>
       </div>
       <div className="mt-2 text-xl font-semibold tabular-nums">{value}</div>
+      {sub && <div className="mt-0.5 text-xs tabular-nums text-muted-foreground">{sub}</div>}
     </Card>
   );
 }
@@ -199,11 +236,21 @@ export default function Servers() {
 
   const chartData = samples.map((s) => ({
     t: timeLabel(s.taken_at, range),
-    cpu: Number(s.cpu_percent.toFixed(1)),
-    memPct: s.mem_total ? Number(((s.mem_used / s.mem_total) * 100).toFixed(1)) : 0,
-    diskPct: s.disk_total ? Number(((s.disk_used / s.disk_total) * 100).toFixed(1)) : 0,
-    net: s.net_rx + s.net_tx,
+    cpu: round(s.cpu_percent),
+    memPct: s.mem_total ? round((s.mem_used / s.mem_total) * 100) : 0,
+    diskPct: s.disk_total ? round((s.disk_used / s.disk_total) * 100) : 0,
+    rx: round(s.net_rx_rate, 0),
+    tx: round(s.net_tx_rate, 0),
+    load: round(s.load1, 2),
+    psiCpu: round(s.psi_cpu_some, 2),
+    psiMem: round(s.psi_mem_some, 2),
+    psiIo: round(s.psi_io_some, 2),
+    selfCpu: round(s.self_cpu, 2),
+    selfRss: s.self_rss,
   }));
+  const hasPressure = cur?.pressure != null || samples.some((s) => s.psi_cpu_some != null);
+  const hasSelf = cur?.self != null || samples.some((s) => s.self_rss != null);
+  const cores = cur?.cpu_cores ?? 0;
 
   return (
     <div className="space-y-6">
@@ -212,47 +259,101 @@ export default function Servers() {
         title="Servers"
         description="Live vitals for this Host, refreshed every few seconds."
         actions={
-          <Badge variant="success">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
-            Live
-          </Badge>
+          <div className="flex items-center gap-3">
+            {cur?.self && (
+              <span
+                className="text-xs tabular-nums text-muted-foreground"
+                title="This Nexus process's own CPU (% of one core) and resident memory"
+              >
+                Nexus {cur.self.cpu.toFixed(1)}% · {bytes(cur.self.mem_rss)}
+              </span>
+            )}
+            <Badge variant="success">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
+              Live
+            </Badge>
+          </div>
         }
       />
 
       {loading ? (
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-[5.5rem]" />
+            <Skeleton key={i} className="h-[6.5rem]" />
           ))}
         </div>
       ) : cur ? (
         <>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-            <Stat icon={Cpu} label="CPU" value={`${cur.cpu_percent.toFixed(1)}%`} />
+            <Stat
+              icon={Cpu}
+              label="CPU"
+              value={`${cur.cpu_percent.toFixed(1)}%`}
+              sub={
+                cores > 0
+                  ? `${((cur.cpu_percent / 100) * cores).toFixed(1)} of ${cores} cores`
+                  : undefined
+              }
+            />
             <Stat
               icon={MemoryStick}
               label="Memory"
               value={`${bytes(cur.mem_used)} / ${bytes(cur.mem_total)}`}
+              sub={`${bytes(Math.max(0, cur.mem_total - cur.mem_used))} available`}
+              title="Used = total − available; reclaimable page cache doesn't count."
             />
             <Stat
               icon={HardDrive}
               label="Disk"
               value={`${bytes(cur.disk_used)} / ${bytes(cur.disk_total)}`}
+              sub={
+                cur.disk_total
+                  ? `${bytes(cur.disk_total - cur.disk_used)} free on /`
+                  : undefined
+              }
             />
-            <Stat
-              icon={Network}
-              label="Network"
-              value={`↓${bytes(cur.net_rx)} ↑${bytes(cur.net_tx)}`}
-            />
+            {cur.net_rate ? (
+              <Stat
+                icon={Network}
+                label="Network"
+                value={`↓${rate(cur.net_rate.rx_bytes_per_sec)} ↑${rate(cur.net_rate.tx_bytes_per_sec)}`}
+                sub={`${pps(cur.net_rate.rx_packets_per_sec)} / ${pps(cur.net_rate.tx_packets_per_sec)} pkt/s`}
+                title={`Since boot: ↓${bytes(cur.net_rx)} ↑${bytes(cur.net_tx)} (loopback excluded)`}
+              />
+            ) : (
+              <Stat
+                icon={Network}
+                label="Network"
+                value={`↓${bytes(cur.net_rx)} ↑${bytes(cur.net_tx)}`}
+                sub="since boot"
+              />
+            )}
             <Stat
               icon={Activity}
               label="Load"
               value={`${cur.load1.toFixed(2)} ${cur.load5.toFixed(2)} ${cur.load15.toFixed(2)}`}
+              sub={cores > 0 ? `${(cur.load1 / cores).toFixed(2)} per core` : undefined}
+              title="1, 5 and 15-minute load averages; above 1.00 per core means work is queueing."
             />
             <Stat icon={Clock} label="Uptime" value={uptime(cur.uptime_secs)} />
           </div>
 
-          {cur.disks.length > 0 && <DisksCard disks={cur.disks} />}
+          {(cur.disks.length > 0 || cur.pressure) && (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              {cur.disks.length > 0 && (
+                <DisksCard
+                  disks={cur.disks}
+                  className={cur.pressure ? "lg:col-span-2" : "lg:col-span-3"}
+                />
+              )}
+              {cur.pressure && (
+                <PressureCard
+                  pressure={cur.pressure}
+                  className={cur.disks.length > 0 ? undefined : "lg:col-span-3"}
+                />
+              )}
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-muted-foreground">Trends</h2>
@@ -281,10 +382,60 @@ export default function Servers() {
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <Chart title="CPU %" data={chartData} dataKey="cpu" unit="%" />
-            <Chart title="Memory %" data={chartData} dataKey="memPct" unit="%" />
-            <Chart title="Disk %" data={chartData} dataKey="diskPct" unit="%" />
-            <Chart title="Network" data={chartData} dataKey="net" format={bytes} />
+            <Chart title="CPU %" data={chartData} series={[{ key: "cpu", label: "CPU" }]} unit="%" />
+            <Chart
+              title="Memory %"
+              data={chartData}
+              series={[{ key: "memPct", label: "Memory" }]}
+              unit="%"
+            />
+            <Chart
+              title="Disk %"
+              data={chartData}
+              series={[{ key: "diskPct", label: "Disk" }]}
+              unit="%"
+            />
+            <Chart
+              title="Network throughput"
+              data={chartData}
+              series={[
+                { key: "rx", label: "↓ in" },
+                { key: "tx", label: "↑ out", tone: "orange" },
+              ]}
+              format={rate}
+              axisWidth={64}
+            />
+            <Chart
+              title="Load (1 min)"
+              data={chartData}
+              series={[{ key: "load", label: "Load" }]}
+              refLine={cores > 0 ? { y: cores, label: `${cores} cores` } : undefined}
+            />
+            {hasPressure && (
+              <Chart
+                title="Pressure stall (some, avg10)"
+                data={chartData}
+                series={[
+                  { key: "psiCpu", label: "CPU" },
+                  { key: "psiMem", label: "Memory", tone: "orange" },
+                  { key: "psiIo", label: "I/O", tone: "violet" },
+                ]}
+                unit="%"
+              />
+            )}
+            {hasSelf && (
+              <Chart
+                title="Nexus process"
+                data={chartData}
+                series={[
+                  { key: "selfRss", label: "Memory" },
+                  { key: "selfCpu", label: "CPU", tone: "orange", right: true },
+                ]}
+                format={bytes}
+                rightUnit="%"
+                axisWidth={56}
+              />
+            )}
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -424,9 +575,9 @@ export default function Servers() {
   );
 }
 
-function DisksCard({ disks }: { disks: Disk[] }) {
+function DisksCard({ disks, className }: { disks: Disk[]; className?: string }) {
   return (
-    <Card className="p-4">
+    <Card className={cn("p-4", className)}>
       <div className="mb-3 flex items-center gap-2">
         <HardDrive size={16} className="text-muted-foreground" />
         <h2 className="font-semibold">Filesystems</h2>
@@ -459,6 +610,58 @@ function DisksCard({ disks }: { disks: Disk[] }) {
                 <div
                   className={cn("h-full rounded-full", tone)}
                   style={{ width: `${Math.min(100, pct)}%` }}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
+
+// PressureCard shows Linux pressure-stall information: the share of the last
+// 10 seconds in which some (or, for "full", all) non-idle tasks were stalled
+// waiting on CPU, memory or I/O. Unlike utilisation it measures lost time
+// directly, so any sustained non-zero value is worth a look.
+function PressureCard({ pressure: p, className }: { pressure: Pressure; className?: string }) {
+  const rows: { label: string; some: number; full?: number }[] = [
+    { label: "CPU", some: p.cpu_some },
+    { label: "Memory", some: p.memory_some, full: p.memory_full },
+    { label: "I/O", some: p.io_some, full: p.io_full },
+  ];
+  return (
+    <Card className={cn("p-4", className)}>
+      <div className="mb-3 flex items-center gap-2">
+        <Gauge size={16} className="text-muted-foreground" />
+        <h2 className="font-semibold">Pressure</h2>
+        <span className="text-xs text-muted-foreground">% of last 10s stalled</span>
+      </div>
+      <ul className="space-y-3">
+        {rows.map((r) => {
+          const tone = r.some >= 40 ? "bg-destructive" : r.some >= 10 ? "bg-warning" : "bg-primary";
+          return (
+            <li key={r.label}>
+              <div className="flex items-baseline gap-2 text-sm">
+                <span className="text-xs font-medium">{r.label}</span>
+                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                  some{" "}
+                  <span
+                    className={cn("font-medium", r.some >= 40 ? "text-destructive" : "text-foreground")}
+                  >
+                    {r.some.toFixed(2)}%
+                  </span>
+                  {r.full != null && (
+                    <>
+                      {" · "}full <span className="font-medium text-foreground">{r.full.toFixed(2)}%</span>
+                    </>
+                  )}
+                </span>
+              </div>
+              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className={cn("h-full rounded-full", tone)}
+                  style={{ width: `${Math.min(100, r.some)}%` }}
                 />
               </div>
             </li>
@@ -640,35 +843,68 @@ function ContainerModal({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
+// Series tones: the brand teal first, then two distinguishable accents.
+const tones = {
+  teal: { light: "#0d9488", dark: "#2dd4bf" },
+  orange: { light: "#ea580c", dark: "#fb923c" },
+  violet: { light: "#7c3aed", dark: "#a78bfa" },
+};
+type Series = { key: string; label: string; tone?: keyof typeof tones; right?: boolean };
+
+// Chart plots one or more series over the samples. Null points (a sample with
+// no reading for that series) leave a gap rather than drawing a false zero.
+// Series marked `right` use a second axis labelled with rightUnit.
 function Chart({
   title,
   data,
-  dataKey,
+  series,
   unit,
   format,
+  rightUnit,
+  refLine,
+  axisWidth = 44,
 }: {
   title: string;
-  data: Record<string, number | string>[];
-  dataKey: string;
+  data: Record<string, number | string | null>[];
+  series: Series[];
   unit?: string;
   format?: (n: number) => string;
+  rightUnit?: string;
+  refLine?: { y: number; label: string };
+  axisWidth?: number;
 }) {
   const { theme } = useTheme();
-  const stroke = theme === "dark" ? "#2dd4bf" : "#0d9488";
   const grid = theme === "dark" ? "#1e293b" : "#e2e8f0";
   const axis = theme === "dark" ? "#64748b" : "#94a3b8";
-  const gradId = `grad-${dataKey}`;
+  const color = (s: Series) => tones[s.tone ?? "teal"][theme === "dark" ? "dark" : "light"];
+  const fmt = (v: number) => (format ? format(v) : `${v}${unit ?? ""}`);
+  const fmtRight = (v: number) => `${v}${rightUnit ?? ""}`;
+  const hasRight = series.some((s) => s.right);
 
   return (
     <Card className="p-4">
-      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">{title}</h2>
+      <div className="mb-3 flex items-center gap-3">
+        <h2 className="text-sm font-semibold text-muted-foreground">{title}</h2>
+        {series.length > 1 && (
+          <div className="ml-auto flex items-center gap-3 text-[11px] text-muted-foreground">
+            {series.map((s) => (
+              <span key={s.key} className="inline-flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full" style={{ background: color(s) }} />
+                {s.label}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
       <ResponsiveContainer width="100%" height={180}>
         <AreaChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
           <defs>
-            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={stroke} stopOpacity={0.25} />
-              <stop offset="100%" stopColor={stroke} stopOpacity={0} />
-            </linearGradient>
+            {series.map((s) => (
+              <linearGradient key={s.key} id={`grad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={color(s)} stopOpacity={series.length > 1 ? 0.15 : 0.25} />
+                <stop offset="100%" stopColor={color(s)} stopOpacity={0} />
+              </linearGradient>
+            ))}
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke={grid} vertical={false} />
           <XAxis
@@ -679,12 +915,33 @@ function Chart({
             minTickGap={32}
           />
           <YAxis
-            width={44}
+            yAxisId="left"
+            width={axisWidth}
             tick={{ fill: axis, fontSize: 11 }}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(v) => (format ? format(Number(v)) : `${v}${unit ?? ""}`)}
+            tickFormatter={(v) => fmt(Number(v))}
           />
+          {hasRight && (
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              width={40}
+              tick={{ fill: axis, fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(v) => fmtRight(Number(v))}
+            />
+          )}
+          {refLine && (
+            <ReferenceLine
+              yAxisId="left"
+              y={refLine.y}
+              stroke={axis}
+              strokeDasharray="4 4"
+              label={{ value: refLine.label, position: "insideTopRight", fill: axis, fontSize: 10 }}
+            />
+          )}
           <Tooltip
             contentStyle={{
               background: "hsl(var(--card))",
@@ -694,20 +951,25 @@ function Chart({
               color: "hsl(var(--card-foreground))",
             }}
             labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-            formatter={(v: number) => [
-              format ? format(v) : `${v}${unit ?? ""}`,
-              title,
-            ]}
+            formatter={(v: number, _name, item) => {
+              const s = series.find((x) => x.key === item.dataKey);
+              return [s?.right ? fmtRight(v) : fmt(v), s?.label ?? title];
+            }}
           />
-          <Area
-            type="monotone"
-            dataKey={dataKey}
-            stroke={stroke}
-            strokeWidth={2}
-            fill={`url(#${gradId})`}
-            dot={false}
-            isAnimationActive={false}
-          />
+          {series.map((s) => (
+            <Area
+              key={s.key}
+              yAxisId={s.right ? "right" : "left"}
+              type="monotone"
+              dataKey={s.key}
+              name={s.label}
+              stroke={color(s)}
+              strokeWidth={2}
+              fill={`url(#grad-${s.key})`}
+              dot={false}
+              isAnimationActive={false}
+            />
+          ))}
         </AreaChart>
       </ResponsiveContainer>
     </Card>

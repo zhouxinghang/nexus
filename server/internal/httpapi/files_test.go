@@ -21,6 +21,7 @@ type resourceResp struct {
 	IsDir      bool       `json:"is_dir"`
 	ModifiedAt *time.Time `json:"modified_at"`
 	State      string     `json:"state"`
+	Kind       string     `json:"kind"`
 	Note       string     `json:"note"`
 	Tags       []string   `json:"tags"`
 }
@@ -50,13 +51,55 @@ func (h *harness) createRoot(t *testing.T, dir string) rootResp {
 	return root
 }
 
+// scan starts a background scan and blocks until it finishes, then returns the
+// root's indexed Resources. Scanning is asynchronous (POST 202 + poll), so the
+// helper hides the polling the real UI does.
 func (h *harness) scan(t *testing.T, rootID int64) []resourceResp {
 	t.Helper()
-	resp := h.do(http.MethodPost, path("/api/files/roots/", rootID)+"/scan", nil)
+	h.scanAndWait(t, rootID)
+	resp := h.do(http.MethodGet, fmt.Sprintf("/api/files/resources?root_id=%d&limit=1000", rootID), nil)
 	mustStatus(t, resp, http.StatusOK)
 	var resources []resourceResp
 	decodeItems(t, resp, &resources)
 	return resources
+}
+
+// scanAndWait POSTs a scan then polls the status endpoint until the scan leaves
+// the running phase, returning the terminal status. It fails the test on a
+// failed scan or if the scan doesn't settle within a generous timeout.
+func (h *harness) scanAndWait(t *testing.T, rootID int64) scanStatusResp {
+	t.Helper()
+	start := h.do(http.MethodPost, path("/api/files/roots/", rootID)+"/scan", nil)
+	mustStatus(t, start, http.StatusAccepted)
+	start.Body.Close()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		resp := h.do(http.MethodGet, path("/api/files/roots/", rootID)+"/scan", nil)
+		mustStatus(t, resp, http.StatusOK)
+		var st scanStatusResp
+		decode(t, resp, &st)
+		switch st.Phase {
+		case "completed":
+			return st
+		case "failed":
+			t.Fatalf("scan failed: %s", st.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scan did not complete within timeout (phase=%s)", st.Phase)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// scanStatusResp mirrors the server's scan status envelope.
+type scanStatusResp struct {
+	RootID  int64  `json:"root_id"`
+	Phase   string `json:"phase"`
+	Total   int    `json:"total"`
+	Indexed int    `json:"indexed"`
+	Removed int    `json:"removed"`
+	Error   string `json:"error"`
 }
 
 func TestRootRejectsNonexistentPath(t *testing.T) {
@@ -328,10 +371,11 @@ func TestDownloadResource(t *testing.T) {
 
 // resourcePage is the offset envelope returned by GET /api/files/resources.
 type resourcePage struct {
-	Items  []resourceResp `json:"items"`
-	Total  int64          `json:"total"`
-	Limit  int32          `json:"limit"`
-	Offset int32          `json:"offset"`
+	Items  []resourceResp   `json:"items"`
+	Total  int64            `json:"total"`
+	Limit  int32            `json:"limit"`
+	Offset int32            `json:"offset"`
+	Kinds  map[string]int64 `json:"kinds"`
 }
 
 func (h *harness) resourcePage(query string) resourcePage {

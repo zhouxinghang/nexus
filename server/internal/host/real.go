@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -32,7 +34,21 @@ type RealHost struct {
 	DockerSocket string
 	// TopN is how many processes to include in the top-process lists.
 	TopN int
+
+	// Rates (network throughput, per-process CPU) are deltas between
+	// consecutive readings, so the previous ones are kept here. mu also
+	// serialises Sample so overlapping callers don't race the baselines.
+	mu       sync.Mutex
+	last     Vitals
+	lastAt   time.Time
+	prevNet  netReading
+	prevProc procReading
 }
+
+// minSampleGap is the shortest window a rate is computed over. Sample calls
+// closer together than this (the sampler and a dashboard poll colliding)
+// share one reading instead of producing a noisy sub-second rate.
+const minSampleGap = time.Second
 
 // NewRealHost builds a RealHost with sensible defaults.
 func NewRealHost() *RealHost {
@@ -77,12 +93,16 @@ func (h *RealHost) List(dir string) ([]FileInfo, error) {
 
 func (h *RealHost) Walk(root string) ([]FileInfo, error) {
 	var out []FileInfo
-	err := filepath.Walk(root, func(path string, fi os.FileInfo, err error) error {
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries
 		}
-		if fi.IsDir() {
+		if d.IsDir() {
 			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return nil // vanished between the walk and the stat
 		}
 		out = append(out, toFileInfo(path, fi))
 		return nil
@@ -108,64 +128,283 @@ func (h *RealHost) MkdirAll(path string) error {
 
 // --- Metrics capability ---
 
+// Sample reads the Host's vitals. The resource set follows what Bazel's
+// profiler tracks for the machine it builds on (LocalResourceUsageCollectors,
+// NetworkMetricsCollector): CPU against the core count, memory as
+// Total − Available, non-loopback network throughput in bytes and packets per
+// second, Linux pressure-stall information, and the monitor's own CPU/RSS.
 func (h *RealHost) Sample() (Vitals, error) {
-	var v Vitals
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	if !h.lastAt.IsZero() && now.Sub(h.lastAt) < minSampleGap {
+		return h.last, nil
+	}
 
+	var v Vitals
 	if pcts, err := cpu.Percent(0, false); err == nil && len(pcts) > 0 {
 		v.CPUPercent = pcts[0]
 	}
+	if n, err := cpu.Counts(true); err == nil {
+		v.CPUCores = n
+	}
 	if vm, err := mem.VirtualMemory(); err == nil {
 		v.MemTotal = vm.Total
-		v.MemUsed = vm.Used
+		if vm.Available < vm.Total {
+			v.MemUsed = vm.Total - vm.Available
+		}
 	}
 	if du, err := disk.Usage("/"); err == nil {
 		v.DiskTotal = du.Total
 		v.DiskUsed = du.Used
 	}
 	v.Disks = diskUsages()
-	if counters, err := gopsnet.IOCounters(false); err == nil && len(counters) > 0 {
-		v.NetRx = counters[0].BytesRecv
-		v.NetTx = counters[0].BytesSent
+	if counters, err := gopsnet.IOCounters(true); err == nil {
+		cur := netReading{at: now, nics: countedNICs(counters, loopbackNICs())}
+		for _, c := range cur.nics {
+			v.NetRx += c.BytesRecv
+			v.NetTx += c.BytesSent
+		}
+		v.NetRate = netRate(h.prevNet, cur)
+		h.prevNet = cur
 	}
 	if avg, err := load.Avg(); err == nil {
 		v.Load1 = avg.Load1
 		v.Load5 = avg.Load5
 		v.Load15 = avg.Load15
 	}
+	v.Pressure = readPressure(pressureDir)
 	if up, err := host.Uptime(); err == nil {
 		v.UptimeSecs = up
 	}
-	v.TopProcs = h.topProcesses()
+	v.TopProcs, v.Self = h.processes(now, v.MemTotal)
+
+	h.last, h.lastAt = v, now
 	return v, nil
 }
 
-func (h *RealHost) topProcesses() []Process {
-	procs, err := process.Processes()
+// --- network throughput ---
+
+// netReading is one snapshot of the per-interface counters that count.
+type netReading struct {
+	at   time.Time
+	nics map[string]gopsnet.IOCountersStat
+}
+
+// loopbackNICs names the loopback interfaces. On error it's empty, so
+// nothing is excluded rather than everything.
+func loopbackNICs() map[string]bool {
+	out := map[string]bool{}
+	ifs, err := net.Interfaces()
 	if err != nil {
+		return out
+	}
+	for _, ifi := range ifs {
+		if ifi.Flags&net.FlagLoopback != 0 {
+			out[ifi.Name] = true
+		}
+	}
+	return out
+}
+
+// countedNICs keeps the interfaces whose traffic counts toward the Host:
+// everything but loopback, which only carries the Host talking to itself
+// (Nexus ↔ Postgres on localhost, for one) and would swamp real traffic.
+func countedNICs(counters []gopsnet.IOCountersStat, loopback map[string]bool) map[string]gopsnet.IOCountersStat {
+	out := make(map[string]gopsnet.IOCountersStat, len(counters))
+	for _, c := range counters {
+		if !loopback[c.Name] {
+			out[c.Name] = c
+		}
+	}
+	return out
+}
+
+// netRate is the per-second throughput between two readings, summed over
+// the interfaces present in both. It's nil without a usable earlier reading.
+func netRate(prev, cur netReading) *NetRate {
+	secs := cur.at.Sub(prev.at).Seconds()
+	if prev.nics == nil || secs <= 0 {
 		return nil
 	}
+	var r NetRate
+	for name, c := range cur.nics {
+		p, ok := prev.nics[name]
+		if !ok {
+			continue // appeared since the last reading: no baseline yet
+		}
+		r.RxBytes += float64(counterDelta(p.BytesRecv, c.BytesRecv))
+		r.TxBytes += float64(counterDelta(p.BytesSent, c.BytesSent))
+		r.RxPackets += float64(counterDelta(p.PacketsRecv, c.PacketsRecv))
+		r.TxPackets += float64(counterDelta(p.PacketsSent, c.PacketsSent))
+	}
+	r.RxBytes /= secs
+	r.TxBytes /= secs
+	r.RxPackets /= secs
+	r.TxPackets /= secs
+	return &r
+}
+
+// counterDelta is how much a monotonic counter grew between readings. One
+// that went backwards wrapped or was reset (e.g. a driver reload), so its new
+// value is the growth since — the same rule as Bazel's network collector.
+func counterDelta(prev, cur uint64) uint64 {
+	if cur < prev {
+		return cur
+	}
+	return cur - prev
+}
+
+// --- pressure stall information ---
+
+// pressureDir is where Linux (4.20+, CONFIG_PSI) exposes PSI.
+const pressureDir = "/proc/pressure"
+
+// readPressure reads cpu/memory/io PSI from dir. It's nil when any file is
+// missing or unparsable — not Linux, an old kernel, or PSI disabled.
+func readPressure(dir string) *Pressure {
+	read := func(name string) (some, full float64, ok bool) {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return 0, 0, false
+		}
+		return parsePSI(string(b))
+	}
+	cpuSome, _, okCPU := read("cpu")
+	memSome, memFull, okMem := read("memory")
+	ioSome, ioFull, okIO := read("io")
+	if !okCPU || !okMem || !okIO {
+		return nil
+	}
+	return &Pressure{CPUSome: cpuSome, MemorySome: memSome, MemoryFull: memFull, IOSome: ioSome, IOFull: ioFull}
+}
+
+// parsePSI extracts the avg10 figures from one /proc/pressure/* file:
+//
+//	some avg10=1.25 avg60=0.40 avg300=0.08 total=123456
+//	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+//
+// ok is false without a parsable "some" line; a missing "full" line is 0.
+func parsePSI(s string) (some, full float64, ok bool) {
+	for _, line := range strings.Split(s, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		for _, f := range fields[1:] {
+			raw, found := strings.CutPrefix(f, "avg10=")
+			if !found {
+				continue
+			}
+			avg10, err := strconv.ParseFloat(raw, 64)
+			if err != nil {
+				break
+			}
+			switch fields[0] {
+			case "some":
+				some, ok = avg10, true
+			case "full":
+				full = avg10
+			}
+			break
+		}
+	}
+	return some, full, ok
+}
+
+// --- processes ---
+
+// procCPU is one process's cumulative CPU time. The start time rides along so
+// a recycled pid isn't mistaken for the process it replaced.
+type procCPU struct {
+	created int64   // unix ms
+	total   float64 // user + system seconds
+}
+
+// procReading is the CPU times of every process at one moment.
+type procReading struct {
+	at   time.Time
+	cpus map[int32]procCPU
+}
+
+// cpuPercent is a process's CPU use in percent of one core. With a baseline
+// for the same process it's the rate over the window — what top shows. On the
+// first reading, or for a process started since, it falls back to the
+// lifetime average.
+func cpuPercent(prev procCPU, hasPrev bool, cur procCPU, window float64, now time.Time) float64 {
+	if hasPrev && prev.created == cur.created && window > 0 && cur.total >= prev.total {
+		return 100 * (cur.total - prev.total) / window
+	}
+	if cur.created <= 0 {
+		return 0
+	}
+	life := now.Sub(time.UnixMilli(cur.created)).Seconds()
+	if life <= 0 {
+		return 0
+	}
+	return 100 * cur.total / life
+}
+
+// readProcCPU reads p's cumulative CPU time; ok is false when the OS won't
+// say (another user's process, or one that just exited).
+func readProcCPU(p *process.Process) (procCPU, bool) {
+	t, err := p.Times()
+	if err != nil || t == nil {
+		return procCPU{}, false
+	}
+	created, _ := p.CreateTime()
+	return procCPU{created: created, total: t.User + t.System}, true
+}
+
+// processes lists every process once, returning the top-N lists and the
+// Nexus process's own usage. CPU is a rate against the previous reading, which
+// it then replaces. Callers hold h.mu.
+func (h *RealHost) processes(now time.Time, memTotal uint64) ([]Process, *SelfUsage) {
+	procs, err := process.Processes()
+	if err != nil {
+		return nil, nil
+	}
+	window := now.Sub(h.prevProc.at).Seconds()
+	cur := procReading{at: now, cpus: make(map[int32]procCPU, len(procs))}
+	selfPID := int32(os.Getpid())
+	var self *SelfUsage
 	all := make([]Process, 0, len(procs))
 	for _, p := range procs {
 		name, _ := p.Name()
-		cpuPct, _ := p.CPUPercent()
-		memPct, _ := p.MemoryPercent()
+		var cpuPct float64
+		if c, ok := readProcCPU(p); ok {
+			prev, hasPrev := h.prevProc.cpus[p.Pid]
+			cpuPct = cpuPercent(prev, hasPrev, c, window, now)
+			cur.cpus[p.Pid] = c
+		}
 		var rss uint64
 		if mi, err := p.MemoryInfo(); err == nil && mi != nil {
 			rss = mi.RSS
+		}
+		var memPct float64
+		if memTotal > 0 {
+			memPct = 100 * float64(rss) / float64(memTotal)
+		}
+		if p.Pid == selfPID {
+			self = &SelfUsage{CPU: cpuPct, MemRSS: rss}
 		}
 		all = append(all, Process{
 			PID:     p.Pid,
 			Name:    name,
 			CPU:     cpuPct,
 			MemRSS:  rss,
-			MemPerc: float64(memPct),
+			MemPerc: memPct,
 		})
 	}
-	n := h.TopN
+	h.prevProc = cur
+	return topN(all, h.TopN), self
+}
+
+// topN collects the top n processes by CPU and by memory, deduplicated by PID.
+func topN(all []Process, n int) []Process {
 	if n <= 0 {
 		n = 5
 	}
-	// Collect top-N by CPU and by memory, deduplicated by PID.
 	byCPU := make([]Process, len(all))
 	copy(byCPU, all)
 	sort.Slice(byCPU, func(i, j int) bool { return byCPU[i].CPU > byCPU[j].CPU })
@@ -305,7 +544,16 @@ func (h *RealHost) ProcessDetail(pid int32) (ProcessDetail, error) {
 		d.CreatedAt = time.UnixMilli(ms)
 	}
 	d.NumThreads, _ = p.NumThreads()
-	d.CPU, _ = p.CPUPercent()
+	if c, ok := readProcCPU(p); ok {
+		// Rate against the last Sample's reading, so the drill-in agrees with
+		// the top-process row it was opened from.
+		h.mu.Lock()
+		prev, hasPrev := h.prevProc.cpus[pid]
+		now := time.Now()
+		window := now.Sub(h.prevProc.at).Seconds()
+		h.mu.Unlock()
+		d.CPU = cpuPercent(prev, hasPrev, c, window, now)
+	}
 	if mp, err := p.MemoryPercent(); err == nil {
 		d.MemPerc = float64(mp)
 	}

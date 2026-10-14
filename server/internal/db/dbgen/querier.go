@@ -19,8 +19,19 @@ type Querier interface {
 	ArchiveTask(ctx context.Context, id int64) (Task, error)
 	AttachTaskLabel(ctx context.Context, arg AttachTaskLabelParams) error
 	BookmarkHealthSummary(ctx context.Context) (BookmarkHealthSummaryRow, error)
+	// Upserts many Resources in a single round-trip from parallel arrays. A plain
+	// scan otherwise fans out to one INSERT per file; collapsing the changed rows
+	// into one statement is the difference between thousands of round-trips and one
+	// (the FileBrowser-Quantum "batch the index writes" idea, over Postgres). The
+	// arrays are positionally aligned and zipped back together by ordinality:
+	// paths[i] carries names[i], sizes[i], etc.
+	BulkUpsertResources(ctx context.Context, arg BulkUpsertResourcesParams) error
 	// The total for the same filter set as ListResourcesPage.
 	CountResources(ctx context.Context, arg CountResourcesParams) (int64, error)
+	// Per-kind totals for the root / directory-prefix / tag filters, deliberately
+	// ignoring the kind filter itself so the UI's type chips always show how many
+	// Resources of each kind are reachable within the other active filters.
+	CountResourcesByKind(ctx context.Context, arg CountResourcesByKindParams) ([]CountResourcesByKindRow, error)
 	CreateBookmark(ctx context.Context, arg CreateBookmarkParams) (Bookmark, error)
 	CreateJournalEntry(ctx context.Context, body string) (JournalEntry, error)
 	CreateLabel(ctx context.Context, arg CreateLabelParams) (Label, error)
@@ -64,17 +75,23 @@ type Querier interface {
 	ListManagedRoots(ctx context.Context) ([]ManagedRoot, error)
 	// Display-time downsampling: average the samples in [from_at, to_at] into
 	// fixed-width time buckets aligned to from_at, one row per non-empty bucket,
-	// ascending. Gauges (CPU, memory/disk used, load) are averaged; totals and
-	// cumulative counters (net bytes, uptime) take the bucket's max, i.e. the
-	// latest reading. This is read-path aggregation only — the stored samples and
-	// their retention are untouched.
+	// ascending. Gauges (CPU, memory/disk used, load, network rates, pressure,
+	// Nexus's own usage) are averaged; totals and cumulative counters (net bytes,
+	// uptime, cores) take the bucket's max, i.e. the latest reading. This is
+	// read-path aggregation only — the stored samples and their retention are
+	// untouched.
 	ListMetricSamplesBucketed(ctx context.Context, arg ListMetricSamplesBucketedParams) ([]ListMetricSamplesBucketedRow, error)
 	ListMetricSamplesInRange(ctx context.Context, arg ListMetricSamplesInRangeParams) ([]MetricSample, error)
+	// The present Resources' change-detection digest for a root. A scan loads these
+	// once, then skips re-upserting any file whose size and modified_at are
+	// unchanged — the modtime-based "quick scan" that makes rescans cheap.
+	ListResourceDigestByRoot(ctx context.Context, rootID int64) ([]ListResourceDigestByRootRow, error)
 	ListResourceIDsByRoot(ctx context.Context, rootID int64) ([]ListResourceIDsByRootRow, error)
 	ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resource, error)
-	// One page of Resources under the optional root / directory-prefix / tag
-	// filters, ordered by path. The prefix is an already-escaped LIKE pattern
-	// (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL.
+	// One page of Resources under the optional root / directory-prefix / tag /
+	// kind filters, ordered by path. The prefix is an already-escaped LIKE pattern
+	// (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL; kind
+	// matches the generated resource.kind column.
 	ListResourcesPage(ctx context.Context, arg ListResourcesPageParams) ([]Resource, error)
 	ListSubtasksForTasks(ctx context.Context, taskIds []int64) ([]Subtask, error)
 	ListTagsForResource(ctx context.Context, resourceID int64) ([]string, error)
@@ -83,6 +100,12 @@ type Querier interface {
 	// carrying one label.
 	ListTasks(ctx context.Context, labelID pgtype.Int8) ([]Task, error)
 	MarkResourceMissing(ctx context.Context, id int64) error
+	// Reconciles a root in one statement: every present Resource whose path wasn't
+	// seen on disk this scan is marked missing. Replaces per-row MarkResourceMissing
+	// calls, and returns the number of rows transitioned so a scan can report how
+	// many Resources vanished. An empty seen set (empty directory) marks every
+	// present row missing, since `path <> ALL('{}')` is true for every path.
+	MarkResourcesMissingUnderRoot(ctx context.Context, arg MarkResourcesMissingUnderRootParams) (int64, error)
 	PruneMetricSamplesBefore(ctx context.Context, takenAt time.Time) (int64, error)
 	// Persist the outcome of a health check without touching Owner-edited fields.
 	RecordBookmarkCheck(ctx context.Context, arg RecordBookmarkCheckParams) (Bookmark, error)

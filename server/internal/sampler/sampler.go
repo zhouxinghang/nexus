@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"nexus/internal/db/dbgen"
 	"nexus/internal/host"
 )
@@ -48,7 +50,7 @@ func (s *Sampler) CaptureOnce(ctx context.Context) error {
 		topProcs = []byte("[]")
 	}
 
-	_, err = s.queries.InsertMetricSample(ctx, dbgen.InsertMetricSampleParams{
+	params := dbgen.InsertMetricSampleParams{
 		CpuPercent: v.CPUPercent,
 		MemTotal:   int64(v.MemTotal),
 		MemUsed:    int64(v.MemUsed),
@@ -62,9 +64,34 @@ func (s *Sampler) CaptureOnce(ctx context.Context) error {
 		UptimeSecs: int64(v.UptimeSecs),
 		TopProcs:   topProcs,
 		Containers: containers,
-	})
+	}
+	// The newer readings are optional: a nil group stores NULLs, which the
+	// API passes through as "no data" rather than zero.
+	if v.CPUCores > 0 {
+		params.CpuCores = pgtype.Int4{Int32: int32(v.CPUCores), Valid: true}
+	}
+	if r := v.NetRate; r != nil {
+		params.NetRxRate = float8(r.RxBytes)
+		params.NetTxRate = float8(r.TxBytes)
+		params.NetRxPps = float8(r.RxPackets)
+		params.NetTxPps = float8(r.TxPackets)
+	}
+	if p := v.Pressure; p != nil {
+		params.PsiCpuSome = float8(p.CPUSome)
+		params.PsiMemSome = float8(p.MemorySome)
+		params.PsiMemFull = float8(p.MemoryFull)
+		params.PsiIoSome = float8(p.IOSome)
+		params.PsiIoFull = float8(p.IOFull)
+	}
+	if self := v.Self; self != nil {
+		params.SelfCpu = float8(self.CPU)
+		params.SelfRss = pgtype.Int8{Int64: int64(self.MemRSS), Valid: true}
+	}
+	_, err = s.queries.InsertMetricSample(ctx, params)
 	return err
 }
+
+func float8(f float64) pgtype.Float8 { return pgtype.Float8{Float64: f, Valid: true} }
 
 // Prune removes samples older than the retention window.
 func (s *Sampler) Prune(ctx context.Context) (int64, error) {

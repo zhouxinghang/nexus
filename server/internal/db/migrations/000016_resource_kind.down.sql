@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS resources_kind_idx;
+ALTER TABLE resources DROP COLUMN IF EXISTS kind;
+DROP FUNCTION IF EXISTS resource_kind(TEXT, BOOLEAN);

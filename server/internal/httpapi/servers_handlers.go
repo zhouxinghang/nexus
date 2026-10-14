@@ -25,8 +25,11 @@ func (s *Server) registerServerRoutes(r chi.Router) {
 	r.Get("/servers/containers/{id}", s.handleContainerDetail)
 }
 
+// vitalsResponse is the live snapshot. net_rate, pressure and self are null
+// when the Host can't provide them (first reading, non-Linux, unreadable).
 type vitalsResponse struct {
 	CPUPercent float64           `json:"cpu_percent"`
+	CPUCores   int               `json:"cpu_cores"`
 	MemTotal   uint64            `json:"mem_total"`
 	MemUsed    uint64            `json:"mem_used"`
 	DiskTotal  uint64            `json:"disk_total"`
@@ -34,10 +37,13 @@ type vitalsResponse struct {
 	Disks      []host.DiskUsage  `json:"disks"`
 	NetRx      uint64            `json:"net_rx"`
 	NetTx      uint64            `json:"net_tx"`
+	NetRate    *host.NetRate     `json:"net_rate"`
 	Load1      float64           `json:"load1"`
 	Load5      float64           `json:"load5"`
 	Load15     float64           `json:"load15"`
+	Pressure   *host.Pressure    `json:"pressure"`
 	UptimeSecs uint64            `json:"uptime_secs"`
+	Self       *host.SelfUsage   `json:"self"`
 	TopProcs   []host.Process    `json:"top_procs"`
 	Docker     host.DockerStatus `json:"docker"`
 }
@@ -50,6 +56,7 @@ func (s *Server) handleServerCurrent(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := vitalsResponse{
 		CPUPercent: v.CPUPercent,
+		CPUCores:   v.CPUCores,
 		MemTotal:   v.MemTotal,
 		MemUsed:    v.MemUsed,
 		DiskTotal:  v.DiskTotal,
@@ -57,10 +64,13 @@ func (s *Server) handleServerCurrent(w http.ResponseWriter, r *http.Request) {
 		Disks:      v.Disks,
 		NetRx:      v.NetRx,
 		NetTx:      v.NetTx,
+		NetRate:    v.NetRate,
 		Load1:      v.Load1,
 		Load5:      v.Load5,
 		Load15:     v.Load15,
+		Pressure:   v.Pressure,
 		UptimeSecs: v.UptimeSecs,
+		Self:       v.Self,
 		TopProcs:   v.TopProcs,
 		Docker:     s.host.Status(),
 	}
@@ -76,6 +86,10 @@ func (s *Server) handleServerCurrent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// sampleResponse is one Metric Sample (or one bucket of them). The fields
+// after uptime_secs are flat and nullable so a chart can plot them directly:
+// null means the sample had no reading — taken before the column existed,
+// off Linux (psi_*), or on the Host's first reading (net rates).
 type sampleResponse struct {
 	ID         int64            `json:"id"`
 	TakenAt    time.Time        `json:"taken_at"`
@@ -90,8 +104,35 @@ type sampleResponse struct {
 	Load5      float64          `json:"load5"`
 	Load15     float64          `json:"load15"`
 	UptimeSecs int64            `json:"uptime_secs"`
+	CPUCores   *int32           `json:"cpu_cores"`
+	NetRxRate  *float64         `json:"net_rx_rate"` // bytes/s
+	NetTxRate  *float64         `json:"net_tx_rate"`
+	NetRxPps   *float64         `json:"net_rx_pps"` // packets/s
+	NetTxPps   *float64         `json:"net_tx_pps"`
+	PsiCPUSome *float64         `json:"psi_cpu_some"` // % of the last 10s
+	PsiMemSome *float64         `json:"psi_mem_some"`
+	PsiMemFull *float64         `json:"psi_mem_full"`
+	PsiIOSome  *float64         `json:"psi_io_some"`
+	PsiIOFull  *float64         `json:"psi_io_full"`
+	SelfCPU    *float64         `json:"self_cpu"` // Nexus, % of one core
+	SelfRSS    *int64           `json:"self_rss"` // Nexus, bytes
 	TopProcs   []host.Process   `json:"top_procs"`
 	Containers []host.Container `json:"containers"`
+}
+
+func optFloat(f pgtype.Float8) *float64 {
+	if !f.Valid {
+		return nil
+	}
+	return &f.Float64
+}
+
+// optIf returns &v when the bucket held at least one sample carrying it.
+func optIf[T any](n int64, v T) *T {
+	if n == 0 {
+		return nil
+	}
+	return &v
 }
 
 // handleServerSamples returns the Metric Samples in [from, to] (default: the
@@ -164,7 +205,7 @@ func (s *Server) handleServerSamples(w http.ResponseWriter, r *http.Request) {
 		if conts == nil {
 			conts = []host.Container{}
 		}
-		out = append(out, sampleResponse{
+		row := sampleResponse{
 			ID:         s.ID,
 			TakenAt:    s.TakenAt,
 			CPUPercent: s.CpuPercent,
@@ -178,9 +219,26 @@ func (s *Server) handleServerSamples(w http.ResponseWriter, r *http.Request) {
 			Load5:      s.Load5,
 			Load15:     s.Load15,
 			UptimeSecs: s.UptimeSecs,
+			NetRxRate:  optFloat(s.NetRxRate),
+			NetTxRate:  optFloat(s.NetTxRate),
+			NetRxPps:   optFloat(s.NetRxPps),
+			NetTxPps:   optFloat(s.NetTxPps),
+			PsiCPUSome: optFloat(s.PsiCpuSome),
+			PsiMemSome: optFloat(s.PsiMemSome),
+			PsiMemFull: optFloat(s.PsiMemFull),
+			PsiIOSome:  optFloat(s.PsiIoSome),
+			PsiIOFull:  optFloat(s.PsiIoFull),
+			SelfCPU:    optFloat(s.SelfCpu),
 			TopProcs:   procs,
 			Containers: conts,
-		})
+		}
+		if s.CpuCores.Valid {
+			row.CPUCores = &s.CpuCores.Int32
+		}
+		if s.SelfRss.Valid {
+			row.SelfRSS = &s.SelfRss.Int64
+		}
+		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -216,6 +274,18 @@ func (s *Server) writeBucketedSamples(w http.ResponseWriter, r *http.Request, fr
 			Load5:      b.Load5,
 			Load15:     b.Load15,
 			UptimeSecs: b.UptimeSecs,
+			CPUCores:   optIf(int64(b.CpuCores), b.CpuCores),
+			NetRxRate:  optIf(b.NetRateN, b.NetRxRate),
+			NetTxRate:  optIf(b.NetRateN, b.NetTxRate),
+			NetRxPps:   optIf(b.NetRateN, b.NetRxPps),
+			NetTxPps:   optIf(b.NetRateN, b.NetTxPps),
+			PsiCPUSome: optIf(b.PsiN, b.PsiCpuSome),
+			PsiMemSome: optIf(b.PsiN, b.PsiMemSome),
+			PsiMemFull: optIf(b.PsiN, b.PsiMemFull),
+			PsiIOSome:  optIf(b.PsiN, b.PsiIoSome),
+			PsiIOFull:  optIf(b.PsiN, b.PsiIoFull),
+			SelfCPU:    optIf(b.SelfN, b.SelfCpu),
+			SelfRSS:    optIf(b.SelfN, b.SelfRss),
 			TopProcs:   []host.Process{},
 			Containers: []host.Container{},
 		})
