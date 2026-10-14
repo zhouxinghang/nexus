@@ -22,6 +22,8 @@ import {
   Type,
   Link2,
   Smile,
+  MousePointerClick,
+  Sparkles,
 } from "lucide-react";
 
 type Health = "unknown" | "up" | "down";
@@ -35,7 +37,14 @@ type Bookmark = {
   last_status: number | null;
   last_latency_ms: number | null;
   last_checked_at: string | null;
+  fetched_title: string | null;
+  fetched_favicon_url: string | null;
+  click_count: number;
+  last_clicked_at: string | null;
 };
+
+type Sort = "created" | "clicks";
+const SORT_KEY = "nexus-bookmarks-sort";
 
 const health: Record<
   Health,
@@ -70,36 +79,56 @@ function faviconFor(url: string): string {
   return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(hostOf(url))}&sz=64`;
 }
 
-function checkedLabel(iso: string | null): string {
-  if (!iso) return "never checked";
+// ago is a compact relative time: "just now", "5m ago", "3h ago", "2d ago".
+function ago(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.round(diff / 60000);
-  if (mins < 1) return "checked just now";
-  if (mins < 60) return `checked ${mins}m ago`;
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
   const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `checked ${hrs}h ago`;
-  return `checked ${Math.round(hrs / 24)}d ago`;
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
 }
 
-// BookmarkIcon renders the Owner's chosen icon: a short string (emoji) inline,
-// an image URL as an <img>, or a favicon fetched from the link's host.
+function checkedLabel(iso: string | null): string {
+  return iso ? `checked ${ago(iso)}` : "never checked";
+}
+
+// BookmarkIcon walks the fallback chain: the Owner's icon (emoji inline, or an
+// image URL), then the favicon Nexus fetched from the site, then Google's
+// favicon service for the host, then the name's first letter. Each image that
+// fails to load drops to the next candidate.
 function BookmarkIcon({ bookmark }: { bookmark: Bookmark }) {
-  const [failed, setFailed] = useState(false);
   const icon = bookmark.icon.trim();
   const isImageUrl = /^https?:\/\//i.test(icon);
   const isEmojiish = icon !== "" && !isImageUrl && icon.length <= 4;
 
+  const candidates = [
+    isImageUrl ? icon : "",
+    bookmark.fetched_favicon_url ?? "",
+    faviconFor(bookmark.url),
+  ].filter(Boolean);
+  const [attempt, setAttempt] = useState(0);
+  // Start over when the candidates change (e.g. a refetch found a favicon).
+  const key = candidates.join("|");
+  const [seenKey, setSeenKey] = useState(key);
+  if (key !== seenKey) {
+    setSeenKey(key);
+    setAttempt(0);
+  }
+
   if (isEmojiish) {
     return <span className="text-xl leading-none">{icon}</span>;
   }
-  const src = !failed ? (isImageUrl ? icon : faviconFor(bookmark.url)) : "";
+  const src = candidates[attempt];
   if (src) {
     return (
       <img
+        key={src}
         src={src}
         alt=""
         className="h-6 w-6 rounded"
-        onError={() => setFailed(true)}
+        onError={() => setAttempt((a) => a + 1)}
       />
     );
   }
@@ -109,6 +138,20 @@ function BookmarkIcon({ bookmark }: { bookmark: Bookmark }) {
       {bookmark.name.charAt(0).toUpperCase()}
     </span>
   );
+}
+
+// recordClick counts an open without ever delaying it: fire-and-forget, with
+// keepalive so the request survives a same-tab navigation.
+function recordClick(id: number) {
+  try {
+    void fetch(`/api/bookmarks/${id}/click`, {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // Counting is best-effort.
+  }
 }
 
 export default function Bookmarks() {
@@ -121,16 +164,24 @@ export default function Bookmarks() {
   const [checkingAll, setCheckingAll] = useState(false);
   const [checkingId, setCheckingId] = useState<number | null>(null);
   const [editing, setEditing] = useState<Bookmark | null>(null);
+  const [sort, setSort] = useState<Sort>(() =>
+    typeof window !== "undefined" && window.localStorage.getItem(SORT_KEY) === "clicks"
+      ? "clicks"
+      : "created",
+  );
   const toast = useToast();
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sortRef = useRef(sort);
+  sortRef.current = sort;
 
   async function load() {
-    setBookmarks(await api.get<Bookmark[]>("/api/bookmarks"));
+    setBookmarks(await api.get<Bookmark[]>(`/api/bookmarks?sort=${sortRef.current}`));
   }
 
   useEffect(() => {
     load().finally(() => setLoading(false));
-    // Pick up health transitions produced by the background checker.
+    // Pick up health transitions (and fetched titles/favicons) produced in the
+    // background.
     pollTimer.current = setInterval(() => {
       load().catch(() => {});
     }, 60000);
@@ -139,17 +190,40 @@ export default function Bookmarks() {
     };
   }, []);
 
+  function changeSort(next: Sort) {
+    if (next === sort) return;
+    setSort(next);
+    sortRef.current = next;
+    window.localStorage.setItem(SORT_KEY, next);
+    load().catch((err) => toast.error((err as Error).message));
+  }
+
+  function opened(b: Bookmark) {
+    recordClick(b.id);
+    // Reflect the open locally; the next load brings server truth.
+    setBookmarks((prev) =>
+      prev.map((x) =>
+        x.id === b.id
+          ? { ...x, click_count: x.click_count + 1, last_clicked_at: new Date().toISOString() }
+          : x,
+      ),
+    );
+  }
+
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !url.trim()) return;
+    if (!url.trim()) return;
     setBusy(true);
     try {
-      await api.post("/api/bookmarks", { name, url, icon });
+      const created = await api.post<Bookmark>("/api/bookmarks", { name, url, icon });
       setName("");
       setUrl("");
       setIcon("");
       await load();
-      toast.success("Bookmark added");
+      toast.success(name.trim() ? "Bookmark added" : `Added “${created.name}”`);
+      // The site's title/favicon are fetched in the background for named
+      // bookmarks; pick them up shortly.
+      setTimeout(() => load().catch(() => {}), 4000);
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -200,9 +274,38 @@ export default function Bookmarks() {
         description="A navigation board of your sites. Click a card to open it; Nexus checks each link's health periodically."
         actions={
           bookmarks.length > 0 ? (
-            <Button variant="outline" onClick={checkAll} loading={checkingAll}>
-              <RefreshCw size={15} /> Check all
-            </Button>
+            <>
+              <div
+                className="inline-flex rounded-md border border-border p-0.5"
+                role="group"
+                aria-label="Sort bookmarks"
+              >
+                {(
+                  [
+                    ["created", "Recent"],
+                    ["clicks", "Most visited"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={sort === key}
+                    onClick={() => changeSort(key)}
+                    className={cn(
+                      "rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                      sort === key
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <Button variant="outline" onClick={checkAll} loading={checkingAll}>
+                <RefreshCw size={15} /> Check all
+              </Button>
+            </>
           ) : undefined
         }
       />
@@ -211,7 +314,7 @@ export default function Bookmarks() {
         <form onSubmit={create} className="flex flex-wrap gap-2">
           <Input
             className="min-w-[10rem] flex-1"
-            placeholder="Name"
+            placeholder="Name (optional — uses the page title)"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
@@ -228,7 +331,7 @@ export default function Bookmarks() {
             value={icon}
             onChange={(e) => setIcon(e.target.value)}
           />
-          <Button type="submit" loading={busy} disabled={!name.trim() || !url.trim()}>
+          <Button type="submit" loading={busy} disabled={!url.trim()}>
             <Plus size={15} /> Add
           </Button>
         </form>
@@ -260,6 +363,11 @@ export default function Bookmarks() {
                   href={b.url}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={() => opened(b)}
+                  onAuxClick={(e) => {
+                    // Middle-click opens a tab too.
+                    if (e.button === 1) opened(b);
+                  }}
                   className="flex min-w-0 flex-1 items-center gap-3 outline-none"
                 >
                   <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
@@ -287,6 +395,15 @@ export default function Bookmarks() {
                           <> · {checkedLabel(b.last_checked_at)}</>
                         )}
                       </span>
+                      {b.click_count > 0 && (
+                        <span
+                          className="ml-auto inline-flex items-center gap-0.5 text-[11px] tabular-nums text-muted-foreground/80"
+                          title={`Opened ${b.click_count} ${b.click_count === 1 ? "time" : "times"}`}
+                        >
+                          <MousePointerClick size={11} />
+                          {b.click_count}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </a>
@@ -350,7 +467,25 @@ function BookmarkEditor({
   const [url, setUrl] = useState(bookmark.url);
   const [icon, setIcon] = useState(bookmark.icon);
   const [saving, setSaving] = useState(false);
+  const [refetching, setRefetching] = useState(false);
+  const [current, setCurrent] = useState(bookmark);
   const toast = useToast();
+
+  // Refresh the site's title/favicon. Only the fetched fields change; the
+  // Owner's name and icon are never touched.
+  async function refetch() {
+    setRefetching(true);
+    try {
+      const updated = await api.post<Bookmark>(`/api/bookmarks/${bookmark.id}/refetch`);
+      setCurrent(updated);
+      onSaved(updated);
+      toast.success(updated.fetched_title ? "Fetched site details" : "Fetched — the page has no title");
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setRefetching(false);
+    }
+  }
 
   const dirty =
     name !== bookmark.name || url !== bookmark.url || icon !== bookmark.icon;
@@ -431,10 +566,40 @@ function BookmarkEditor({
           <Input
             value={icon}
             onChange={(e) => setIcon(e.target.value)}
-            placeholder="Emoji or image URL — leave blank for the site favicon"
+            placeholder="Emoji or image URL — leave blank for the site's favicon"
           />
         </div>
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-3">
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Sparkles size={13} /> From the site
+            </span>
+            <Button
+              variant="ghost"
+              size="xs"
+              className="ml-auto"
+              loading={refetching}
+              onClick={refetch}
+            >
+              {!refetching && <RefreshCw size={12} />} Refetch
+            </Button>
+          </div>
+          <p className="truncate text-sm">
+            {current.fetched_title ?? (
+              <span className="text-muted-foreground">No title fetched yet</span>
+            )}
+          </p>
+          {current.fetched_title && current.fetched_title !== name.trim() && (
+            <button
+              type="button"
+              className="text-xs font-medium text-primary hover:underline"
+              onClick={() => setName(current.fetched_title ?? name)}
+            >
+              Use as name
+            </button>
+          )}
+        </div>
+        <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <Badge variant={health[bookmark.health].variant}>
             {health[bookmark.health].label}
           </Badge>
@@ -442,6 +607,10 @@ function BookmarkEditor({
           {bookmark.last_latency_ms != null && (
             <> · {bookmark.last_latency_ms} ms</>
           )}
+          <span className="ml-auto">
+            Opened {bookmark.click_count} {bookmark.click_count === 1 ? "time" : "times"}
+            {bookmark.last_clicked_at && <> · last {ago(bookmark.last_clicked_at)}</>}
+          </span>
         </p>
       </div>
     </Modal>

@@ -31,3 +31,9 @@ func (s *Server) InsertAgedSampleForTest(ctx context.Context, daysAgo int) error
 func (s *Server) CheckBookmarksForTest(ctx context.Context) error {
 	return s.checker.CheckAll(ctx)
 }
+
+// WaitBackgroundForTest blocks until every fire-and-forget task started by a
+// handler (create-time health checks, metadata fetches) has finished.
+func (s *Server) WaitBackgroundForTest() {
+	s.bg.Wait()
+}

@@ -18,6 +18,11 @@ type bookmarkResp struct {
 	LastStatus    *int32     `json:"last_status"`
 	LastLatencyMs *int64     `json:"last_latency_ms"`
 	LastCheckedAt *time.Time `json:"last_checked_at"`
+
+	FetchedTitle      *string    `json:"fetched_title"`
+	FetchedFaviconURL *string    `json:"fetched_favicon_url"`
+	ClickCount        int64      `json:"click_count"`
+	LastClickedAt     *time.Time `json:"last_clicked_at"`
 }
 
 func TestBookmarkCreateWithNameIconLink(t *testing.T) {
@@ -58,9 +63,10 @@ func TestBookmarkNormalizesBareHost(t *testing.T) {
 	}
 }
 
-func TestBookmarkRejectsEmptyName(t *testing.T) {
+func TestBookmarkEditRejectsEmptyName(t *testing.T) {
 	h := newHarness(t)
-	resp := h.do(http.MethodPost, "/api/bookmarks", map[string]string{
+	b := h.createBookmark("Named", "https://example.com")
+	resp := h.do(http.MethodPatch, path("/api/bookmarks/", b.ID), map[string]string{
 		"name": "   ",
 		"url":  "https://example.com",
 	})

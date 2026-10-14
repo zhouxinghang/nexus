@@ -41,9 +41,17 @@ func main() {
 	}
 	defer pool.Close()
 
-	authn := auth.New(cfg.PasswordHash, cfg.JWTSigningKey)
+	authn := auth.New(cfg.PasswordHash, cfg.JWTSigningKey,
+		auth.WithCookieSecure(cfg.CookieSecure),
+		auth.WithTrustedProxy(cfg.TrustedProxy),
+		auth.WithLimitPolicy(auth.LimitPolicy{
+			MaxFailures: cfg.LoginMaxFailures,
+			Window:      cfg.LoginWindow,
+			Lockout:     cfg.LoginLockout,
+		}),
+	)
 	realHost := host.NewRealHost()
-	srv := httpapi.NewServer(pool, authn, realHost, checker.NewHTTPProber())
+	srv := httpapi.NewServer(pool, authn, realHost, checker.NewHTTPProber(), checker.NewHTTPFetcher())
 
 	// Start the background sampler.
 	go srv.Sampler().Run(ctx)

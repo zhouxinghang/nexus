@@ -18,6 +18,13 @@ _Avoid_: server, node, agent target
 The one person who uses this Nexus instance. There is exactly one.
 _Avoid_: user, account, admin
 
+**Overview**:
+The landing page: a read-only summary of the whole workbench (Host vitals with
+visual threshold flags, Task counts, latest Journal Entries, down Bookmarks,
+Files totals), each panel linking into its tool. It stores nothing of its own
+and never notifies.
+_Avoid_: home, dashboard, index
+
 ### Files
 
 **Resource**:
@@ -50,10 +57,31 @@ _Avoid_: datapoint, stat, reading
 
 **Task**:
 A unit of work with a fixed status of Todo, Doing, or Done, plus an optional
-free-text description, a priority flag (None/Low/Medium/High/Urgent), and an
-optional due date. Tasks are ordered within each column by drag-and-drop;
-priority is a visual flag, not an ordering key.
+free-text description, a priority flag (None/Low/Medium/High/Urgent), an
+optional due date, any number of Labels, and an ordered checklist of Subtasks.
+Tasks are ordered within each column by drag-and-drop; priority and labels are
+visual flags/filters, not ordering keys. There is no project or list grouping —
+Labels are the one grouping mechanism.
 _Avoid_: todo, ticket, issue, card
+
+**Archived** (task state):
+A Task the Owner has cleared off the board without deleting it. Hidden from the
+board, listed newest-archived first in the archived view, and restorable to the
+bottom of its column. Distinct from delete, which is permanent.
+_Avoid_: closed, hidden, trashed
+
+**Label**:
+A named, colored tag the Owner attaches to any number of Tasks (many-to-many)
+to categorize work across columns and filter the board. Renaming or recoloring
+a Label updates every Task carrying it; deleting a Label detaches it from its
+Tasks but never deletes them.
+_Avoid_: tag (that's the Files term), category, project, list
+
+**Subtask**:
+One item in a Task's ordered, single-level checklist: a title and a done flag.
+The Task's card shows progress as done/total. Completing every Subtask does not
+change the Task's status.
+_Avoid_: checklist item, child task, step
 
 ### Journal
 
@@ -66,9 +94,12 @@ _Avoid_: note, log, post, entry
 ### Bookmarks
 
 **Bookmark**:
-One entry on the website-navigation board: an Owner-given name, a clickable
-external http(s) link, and an optional icon (emoji, image URL, or a favicon
-fallback derived from the link's host). Unlike a Resource, a Bookmark points at
+One entry on the website-navigation board: a name, a clickable external
+http(s) link, and an optional icon (emoji or image URL). The Owner's name and
+icon are authoritative; Nexus also keeps the site's own fetched title and
+favicon separately, using the title as the name when the Owner leaves it blank
+and the favicon as the default icon. Each Bookmark keeps a running count of
+how often the Owner opened it. Unlike a Resource, a Bookmark points at
 an external site, not a local file — this is the one place external URLs live,
 and it keeps the Files module local-only (see ADR-0002, ADR-0005).
 _Avoid_: link, favorite, shortcut, resource

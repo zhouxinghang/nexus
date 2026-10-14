@@ -7,6 +7,9 @@ package dbgen
 
 import (
 	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createJournalEntry = `-- name: CreateJournalEntry :one
@@ -22,14 +25,53 @@ func (q *Queries) CreateJournalEntry(ctx context.Context, body string) (JournalE
 	return i, err
 }
 
-const listJournalEntries = `-- name: ListJournalEntries :many
+const latestJournalEntries = `-- name: LatestJournalEntries :many
 SELECT id, body, created_at
 FROM journal_entries
 ORDER BY created_at DESC, id DESC
+LIMIT $1
 `
 
-func (q *Queries) ListJournalEntries(ctx context.Context) ([]JournalEntry, error) {
-	rows, err := q.db.Query(ctx, listJournalEntries)
+func (q *Queries) LatestJournalEntries(ctx context.Context, limit int32) ([]JournalEntry, error) {
+	rows, err := q.db.Query(ctx, latestJournalEntries, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []JournalEntry{}
+	for rows.Next() {
+		var i JournalEntry
+		if err := rows.Scan(&i.ID, &i.Body, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listJournalEntries = `-- name: ListJournalEntries :many
+SELECT id, body, created_at
+FROM journal_entries
+WHERE $1::timestamptz IS NULL
+   OR (created_at, id) < ($1::timestamptz, $2::bigint)
+ORDER BY created_at DESC, id DESC
+LIMIT $3
+`
+
+type ListJournalEntriesParams struct {
+	CursorCreatedAt *time.Time  `json:"cursor_created_at"`
+	CursorID        pgtype.Int8 `json:"cursor_id"`
+	PageLimit       int32       `json:"page_limit"`
+}
+
+// One page of the stream, newest first. Keyset on (created_at, id): pass the
+// last row of the previous page as the cursor, or NULLs for the first page.
+// The stream is append-only, so a cursor never skips or repeats an entry.
+func (q *Queries) ListJournalEntries(ctx context.Context, arg ListJournalEntriesParams) ([]JournalEntry, error) {
+	rows, err := q.db.Query(ctx, listJournalEntries, arg.CursorCreatedAt, arg.CursorID, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -52,14 +94,30 @@ const searchJournalEntries = `-- name: SearchJournalEntries :many
 SELECT id, body, created_at
 FROM journal_entries
 WHERE body ILIKE $1
+  AND ($2::timestamptz IS NULL
+       OR (created_at, id) < ($2::timestamptz, $3::bigint))
 ORDER BY created_at DESC, id DESC
+LIMIT $4
 `
+
+type SearchJournalEntriesParams struct {
+	Pattern         string      `json:"pattern"`
+	CursorCreatedAt *time.Time  `json:"cursor_created_at"`
+	CursorID        pgtype.Int8 `json:"cursor_id"`
+	PageLimit       int32       `json:"page_limit"`
+}
 
 // Case-insensitive substring match, language-agnostic (works for CJK). The
 // caller passes an already-escaped term wrapped in '%'; backslash is the
-// LIKE escape character. Backed by a GIN trigram index on body.
-func (q *Queries) SearchJournalEntries(ctx context.Context, body string) ([]JournalEntry, error) {
-	rows, err := q.db.Query(ctx, searchJournalEntries, body)
+// LIKE escape character. Backed by a GIN trigram index on body. Paged with
+// the same keyset as ListJournalEntries.
+func (q *Queries) SearchJournalEntries(ctx context.Context, arg SearchJournalEntriesParams) ([]JournalEntry, error) {
+	rows, err := q.db.Query(ctx, searchJournalEntries,
+		arg.Pattern,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageLimit,
+	)
 	if err != nil {
 		return nil, err
 	}

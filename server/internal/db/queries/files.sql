@@ -37,14 +37,32 @@ ORDER BY path ASC;
 -- name: GetResourceByPath :one
 SELECT * FROM resources WHERE path = $1;
 
--- name: ListResources :many
-SELECT * FROM resources
-ORDER BY path ASC;
+-- name: ListResourcesPage :many
+-- One page of Resources under the optional root / directory-prefix / tag
+-- filters, ordered by path. The prefix is an already-escaped LIKE pattern
+-- (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL.
+SELECT * FROM resources r
+WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
+  AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
+        SELECT 1 FROM resource_tags rt
+        WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text))
+ORDER BY r.path ASC
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
--- name: ListResourcesByRoot :many
-SELECT * FROM resources
-WHERE root_id = $1
-ORDER BY path ASC;
+-- name: CountResources :one
+-- The total for the same filter set as ListResourcesPage.
+SELECT count(*) FROM resources r
+WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
+  AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
+        SELECT 1 FROM resource_tags rt
+        WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text));
+
+-- name: ResourceSummary :one
+SELECT count(*)                                   AS total,
+       count(*) FILTER (WHERE state = 'missing') AS missing
+FROM resources;
 
 -- name: ListResourceIDsByRoot :many
 SELECT id, path FROM resources
@@ -90,8 +108,10 @@ DELETE FROM resource_tags WHERE resource_id = $1 AND tag = $2;
 -- name: ListTagsForResource :many
 SELECT tag FROM resource_tags WHERE resource_id = $1 ORDER BY tag ASC;
 
--- name: ListResourceIDsByTag :many
-SELECT resource_id FROM resource_tags WHERE tag = $1;
+-- name: ListTagsForResources :many
+SELECT resource_id, tag FROM resource_tags
+WHERE resource_id = ANY(sqlc.arg(ids)::bigint[])
+ORDER BY tag ASC;
 
 -- name: InsertAuditLog :one
 INSERT INTO file_audit_log (action, resource_id, old_path, new_path)

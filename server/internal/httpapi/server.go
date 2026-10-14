@@ -6,6 +6,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -26,10 +27,14 @@ type Server struct {
 	host    host.Host
 	sampler *sampler.Sampler
 	checker *checker.Checker
+	fetcher checker.Fetcher
+	// bg tracks fire-and-forget work started by handlers (create-time health
+	// checks and metadata fetches) so tests can wait for it deterministically.
+	bg sync.WaitGroup
 }
 
 // NewServer builds a Server from its dependencies.
-func NewServer(pool *pgxpool.Pool, authn *auth.Authenticator, h host.Host, prober checker.Prober) *Server {
+func NewServer(pool *pgxpool.Pool, authn *auth.Authenticator, h host.Host, prober checker.Prober, fetcher checker.Fetcher) *Server {
 	queries := dbgen.New(pool)
 	return &Server{
 		pool:    pool,
@@ -38,7 +43,17 @@ func NewServer(pool *pgxpool.Pool, authn *auth.Authenticator, h host.Host, probe
 		host:    h,
 		sampler: sampler.New(queries, h),
 		checker: checker.New(queries, prober),
+		fetcher: fetcher,
 	}
+}
+
+// goBackground runs fn on its own goroutine, tracked by s.bg.
+func (s *Server) goBackground(fn func()) {
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		fn()
+	}()
 }
 
 // Sampler exposes the background sampler so callers (main, tests) can run it.
@@ -64,6 +79,7 @@ func (s *Server) Router(spa http.Handler) http.Handler {
 
 			pr.Get("/auth/me", s.handleMe)
 			pr.Post("/auth/logout", s.handleLogout)
+			pr.Get("/overview", s.handleOverview)
 
 			s.registerJournalRoutes(pr)
 			s.registerTaskRoutes(pr)

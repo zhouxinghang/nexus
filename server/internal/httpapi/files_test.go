@@ -1,10 +1,13 @@
 package httpapi_test
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,7 +55,7 @@ func (h *harness) scan(t *testing.T, rootID int64) []resourceResp {
 	resp := h.do(http.MethodPost, path("/api/files/roots/", rootID)+"/scan", nil)
 	mustStatus(t, resp, http.StatusOK)
 	var resources []resourceResp
-	decode(t, resp, &resources)
+	decodeItems(t, resp, &resources)
 	return resources
 }
 
@@ -181,7 +184,7 @@ func TestClearMissingResource(t *testing.T) {
 
 	lr := h.do(http.MethodGet, "/api/files/resources", nil)
 	var remaining []resourceResp
-	decode(t, lr, &remaining)
+	decodeItems(t, lr, &remaining)
 	if len(remaining) != 0 {
 		t.Errorf("expected 0 resources after clear, got %d", len(remaining))
 	}
@@ -245,7 +248,7 @@ func TestBrowseByRootAndMetadata(t *testing.T) {
 	resp := h.do(http.MethodGet, path("/api/files/resources?root_id=", root.ID), nil)
 	mustStatus(t, resp, http.StatusOK)
 	var resources []resourceResp
-	decode(t, resp, &resources)
+	decodeItems(t, resp, &resources)
 	if len(resources) != 1 {
 		t.Fatalf("expected 1 resource, got %d", len(resources))
 	}
@@ -275,7 +278,7 @@ func TestTagAddAndFilter(t *testing.T) {
 	fr := h.do(http.MethodGet, "/api/files/resources?tag=red", nil)
 	mustStatus(t, fr, http.StatusOK)
 	var filtered []resourceResp
-	decode(t, fr, &filtered)
+	decodeItems(t, fr, &filtered)
 	if len(filtered) != 1 || filtered[0].Name != "x.txt" {
 		t.Errorf("tag filter wrong: %+v", filtered)
 	}
@@ -320,5 +323,127 @@ func TestDownloadResource(t *testing.T) {
 	resp.Body.Close()
 	if string(body) != "payload-bytes" {
 		t.Errorf("download body = %q", string(body))
+	}
+}
+
+// resourcePage is the offset envelope returned by GET /api/files/resources.
+type resourcePage struct {
+	Items  []resourceResp `json:"items"`
+	Total  int64          `json:"total"`
+	Limit  int32          `json:"limit"`
+	Offset int32          `json:"offset"`
+}
+
+func (h *harness) resourcePage(query string) resourcePage {
+	h.t.Helper()
+	r := h.do(http.MethodGet, "/api/files/resources"+query, nil)
+	mustStatus(h.t, r, http.StatusOK)
+	var p resourcePage
+	decode(h.t, r, &p)
+	return p
+}
+
+func TestResourceOffsetPagination(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	for i := 0; i < 7; i++ {
+		writeFile(t, filepath.Join(dir, fmt.Sprintf("f%02d.txt", i)), "x")
+	}
+	root := h.createRoot(t, dir)
+	h.scan(t, root.ID)
+
+	var got []string
+	for offset := 0; ; offset += 3 {
+		p := h.resourcePage(fmt.Sprintf("?limit=3&offset=%d", offset))
+		if p.Total != 7 || p.Limit != 3 || p.Offset != int32(offset) {
+			t.Fatalf("envelope = total %d limit %d offset %d", p.Total, p.Limit, p.Offset)
+		}
+		for _, r := range p.Items {
+			got = append(got, r.Name)
+		}
+		if offset+len(p.Items) >= int(p.Total) {
+			if len(p.Items) != 1 {
+				t.Errorf("final page has %d items, want 1", len(p.Items))
+			}
+			break
+		}
+		if len(p.Items) != 3 {
+			t.Fatalf("page at offset %d has %d items", offset, len(p.Items))
+		}
+	}
+	if len(got) != 7 {
+		t.Fatalf("walked %d resources, want 7", len(got))
+	}
+	for i, name := range got {
+		if want := fmt.Sprintf("f%02d.txt", i); name != want {
+			t.Errorf("position %d = %s, want %s (path ASC)", i, name, want)
+		}
+	}
+
+	// Past the end: empty items, same total.
+	end := h.resourcePage("?limit=3&offset=30")
+	if len(end.Items) != 0 || end.Total != 7 {
+		t.Errorf("past-the-end page = %+v", end)
+	}
+}
+
+func TestResourceTagFilterCountedInSQL(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		writeFile(t, filepath.Join(dir, fmt.Sprintf("top%d.txt", i)), "x")
+		writeFile(t, filepath.Join(sub, fmt.Sprintf("deep%d.txt", i)), "x")
+	}
+	root := h.createRoot(t, dir)
+	resources := h.scan(t, root.ID)
+
+	// Tag 3 top-level files and 2 nested ones.
+	tagged := 0
+	for _, r := range resources {
+		if (strings.HasPrefix(r.Name, "top") && tagged < 3) ||
+			(r.Name == "deep0.txt" || r.Name == "deep1.txt") {
+			ar := h.do(http.MethodPost, path("/api/files/resources/", r.ID)+"/tags", map[string]string{"tag": "keep"})
+			mustStatus(t, ar, http.StatusOK)
+			ar.Body.Close()
+			if strings.HasPrefix(r.Name, "top") {
+				tagged++
+			}
+		}
+	}
+
+	p := h.resourcePage("?tag=keep&limit=2")
+	if p.Total != 5 || len(p.Items) != 2 {
+		t.Errorf("tag page = total %d, %d items; want 5, 2", p.Total, len(p.Items))
+	}
+	for _, r := range p.Items {
+		if len(r.Tags) != 1 || r.Tags[0] != "keep" {
+			t.Errorf("untagged resource in tag page: %+v", r)
+		}
+	}
+
+	// Tag + directory prefix + root together.
+	q := fmt.Sprintf("?tag=keep&root_id=%d&dir=%s", root.ID, url.QueryEscape(sub+"/"))
+	p = h.resourcePage(q)
+	if p.Total != 2 || len(p.Items) != 2 {
+		t.Errorf("tag+dir page = total %d, %d items; want 2, 2", p.Total, len(p.Items))
+	}
+
+	// A directory prefix containing LIKE wildcards matches literally.
+	p = h.resourcePage("?dir=" + url.QueryEscape(dir+"/%"))
+	if p.Total != 0 {
+		t.Errorf("wildcard dir matched %d resources, want 0", p.Total)
+	}
+}
+
+func TestResourcePagingRejectsBadParams(t *testing.T) {
+	h := newHarness(t)
+	for _, q := range []string{"?limit=0", "?limit=x", "?offset=-1", "?offset=y"} {
+		r := h.do(http.MethodGet, "/api/files/resources"+q, nil)
+		mustStatus(t, r, http.StatusBadRequest)
+		r.Body.Close()
 	}
 }

@@ -7,6 +7,7 @@ import Servers from "@/pages/Servers";
 import Tasks from "@/pages/Tasks";
 import Journal from "@/pages/Journal";
 import Bookmarks from "@/pages/Bookmarks";
+import Overview from "@/pages/Overview";
 
 function Protected({ children }: { children: React.ReactNode }) {
   const { authenticated, loading } = useAuth();
@@ -20,7 +21,7 @@ function Protected({ children }: { children: React.ReactNode }) {
 function LoginRoute() {
   const { authenticated, loading } = useAuth();
   if (loading) return null;
-  if (authenticated) return <Navigate to="/files" replace />;
+  if (authenticated) return <Navigate to="/" replace />;
   return <Login />;
 }
 
@@ -36,14 +37,14 @@ export default function App() {
             </Protected>
           }
         >
-          <Route index element={<Navigate to="/files" replace />} />
+          <Route index element={<Overview />} />
           <Route path="/files" element={<Files />} />
           <Route path="/servers" element={<Servers />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/journal" element={<Journal />} />
           <Route path="/bookmarks" element={<Bookmarks />} />
         </Route>
-        <Route path="*" element={<Navigate to="/files" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AuthProvider>
   );

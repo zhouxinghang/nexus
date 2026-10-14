@@ -15,16 +15,26 @@ type FakeHost struct {
 	mu sync.Mutex
 
 	// Vitals returned by Sample(); tests set this directly.
-	Vitals  Vitals
+	Vitals    Vitals
 	SampleErr error
 
 	// DockerStatus returned by Status().
 	Docker DockerStatus
+
+	// Canned drill-in details keyed by pid / container id. A missing key is
+	// ErrNotFound; container lookups return ErrDockerUnavailable while
+	// Docker.Enabled is false.
+	Processes  map[int32]ProcessDetail
+	Containers map[string]ContainerDetail
 }
 
 // NewFakeHost builds a FakeHost with Docker disabled by default.
 func NewFakeHost() *FakeHost {
-	return &FakeHost{Docker: DockerStatus{Enabled: false}}
+	return &FakeHost{
+		Docker:     DockerStatus{Enabled: false},
+		Processes:  map[int32]ProcessDetail{},
+		Containers: map[string]ContainerDetail{},
+	}
 }
 
 // --- FS capability (real temp-dir backed) ---
@@ -102,6 +112,23 @@ func (f *FakeHost) SetVitals(v Vitals) {
 	f.Vitals = v
 }
 
+// SetProcessDetail pins the detail returned for a pid.
+func (f *FakeHost) SetProcessDetail(d ProcessDetail) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Processes[d.PID] = d
+}
+
+func (f *FakeHost) ProcessDetail(pid int32) (ProcessDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	d, ok := f.Processes[pid]
+	if !ok {
+		return ProcessDetail{}, ErrNotFound
+	}
+	return d, nil
+}
+
 // --- Docker capability ---
 
 func (f *FakeHost) Status() DockerStatus {
@@ -115,6 +142,26 @@ func (f *FakeHost) SetDocker(d DockerStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Docker = d
+}
+
+// SetContainerDetail pins the detail returned for a container id.
+func (f *FakeHost) SetContainerDetail(d ContainerDetail) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Containers[d.ID] = d
+}
+
+func (f *FakeHost) ContainerDetail(id string) (ContainerDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.Docker.Enabled {
+		return ContainerDetail{}, ErrDockerUnavailable
+	}
+	d, ok := f.Containers[id]
+	if !ok {
+		return ContainerDetail{}, ErrNotFound
+	}
+	return d, nil
 }
 
 var _ Host = (*FakeHost)(nil)

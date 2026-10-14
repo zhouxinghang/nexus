@@ -41,11 +41,28 @@ export NEXUS_DATABASE_URL='postgresql://postgres:postgres@HOST:5432/nexus'
 export NEXUS_PASSWORD_HASH='<bcrypt hash of the Owner password>'
 export NEXUS_JWT_SECRET='<random signing key>'
 export NEXUS_ADDR=':8080'   # optional, defaults to :8080
+export NEXUS_COOKIE_SECURE=false   # only for plain-HTTP local dev (default true)
 go run ./cmd/nexus
 ```
 
 Migrations run automatically on startup. Open `http://localhost:8080` and log in
 with the single Owner password.
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEXUS_DATABASE_URL` | — (required) | Postgres connection string |
+| `NEXUS_PASSWORD_HASH` | — (required) | bcrypt hash of the Owner password |
+| `NEXUS_JWT_SECRET` | — (required) | session JWT signing key |
+| `NEXUS_ADDR` | `:8080` | HTTP listen address |
+| `NEXUS_COOKIE_SECURE` | `true` | mark the session cookie `Secure`; set `false` when serving plain HTTP (e.g. `http://localhost`) or the browser won't send it |
+| `NEXUS_TRUSTED_PROXY` | `false` | resolve the client IP from `X-Forwarded-For` / `X-Real-IP`; enable only behind a reverse proxy you control |
+| `NEXUS_LOGIN_MAX_FAILURES` | `5` | failed logins from one client before a lockout |
+| `NEXUS_LOGIN_WINDOW` | `15m` | window in which failures are counted (Go duration) |
+| `NEXUS_LOGIN_LOCKOUT` | `1m` | lockout length; the login returns `429` + `Retry-After` meanwhile |
+
+Login throttling is in-memory and clears on restart (ADR-0006).
 
 Generate a password hash, e.g.:
 

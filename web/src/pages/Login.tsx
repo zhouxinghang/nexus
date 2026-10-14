@@ -19,6 +19,8 @@ export default function Login() {
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setError("Incorrect password.");
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError("Too many failed attempts. Try again later.");
       } else {
         setError("Could not sign in. Try again.");
       }

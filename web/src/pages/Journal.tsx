@@ -5,30 +5,59 @@ import { Button, Card, Textarea, Input, EmptyState, Skeleton } from "@/component
 import { BookText, Check, Copy, Search, X } from "lucide-react";
 
 type Entry = { id: number; body: string; created_at: string };
+type EntryPage = { items: Entry[]; next_cursor: string | null };
 
 export default function Journal() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [body, setBody] = useState("");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const toast = useToast();
   const activeQuery = useRef("");
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  function pagePath(q: string, cursor?: string) {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (cursor) params.set("cursor", cursor);
+    const qs = params.toString();
+    return `/api/journal/entries${qs ? `?${qs}` : ""}`;
+  }
+
+  // load fetches the first page (newest entries) for the current search.
   async function load(q = "") {
     activeQuery.current = q;
     setLoading(true);
-    const path = q
-      ? `/api/journal/entries?q=${encodeURIComponent(q)}`
-      : "/api/journal/entries";
     try {
-      setEntries(await api.get<Entry[]>(path));
+      const page = await api.get<EntryPage>(pagePath(q));
+      setEntries(page.items);
+      setNextCursor(page.next_cursor);
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // loadMore appends the next (older) page after the last loaded entry.
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    const q = activeQuery.current;
+    setLoadingMore(true);
+    try {
+      const page = await api.get<EntryPage>(pagePath(q, nextCursor));
+      // Ignore a page that resolves after the search changed underneath it.
+      if (activeQuery.current !== q) return;
+      setEntries((prev) => [...prev, ...page.items]);
+      setNextCursor(page.next_cursor);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -184,6 +213,19 @@ export default function Journal() {
               </div>
             </Card>
           ))
+        )}
+        {!loading && entries.length > 0 && (
+          <div className="flex justify-center pt-1">
+            {nextCursor ? (
+              <Button variant="outline" size="sm" loading={loadingMore} onClick={loadMore}>
+                Load older entries
+              </Button>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {activeQuery.current ? "End of matching entries" : "You've reached the first entry"}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>

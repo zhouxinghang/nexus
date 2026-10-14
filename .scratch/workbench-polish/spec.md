@@ -1,6 +1,6 @@
 # Workbench Polish Spec (post-v1 increment)
 
-Status: ready-for-agent
+Status: done
 
 ## Problem Statement
 

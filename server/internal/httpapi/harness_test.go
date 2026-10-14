@@ -43,6 +43,7 @@ type harness struct {
 	ts      *httptest.Server
 	host    *host.FakeHost
 	prober  *checker.FakeProber
+	fetcher *checker.FakeFetcher
 	cookie  *http.Cookie
 	dbName  string
 	adminDB *pgxpool.Pool
@@ -54,7 +55,35 @@ type harness struct {
 // authenticated unless noLogin is true.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessCfg(t, harnessConfig{})
+}
+
+// newHarnessSeeded is newHarness with a migration-survival hook: the database
+// is first migrated only to schema version fromVersion, seed runs against it
+// (to insert rows under the old schema), and then the remaining migrations run
+// before the server starts.
+func newHarnessSeeded(t *testing.T, fromVersion uint, seed func(ctx context.Context, pool *pgxpool.Pool)) *harness {
+	t.Helper()
+	return newHarnessCfg(t, harnessConfig{fromVersion: fromVersion, seed: seed})
+}
+
+// newHarnessAuth is newHarness with extra Authenticator options (clock,
+// cookie, proxy, limit policy) for the login-hardening tests.
+func newHarnessAuth(t *testing.T, opts ...auth.Option) *harness {
+	t.Helper()
+	return newHarnessCfg(t, harnessConfig{authOpts: opts})
+}
+
+type harnessConfig struct {
+	fromVersion uint
+	seed        func(ctx context.Context, pool *pgxpool.Pool)
+	authOpts    []auth.Option
+}
+
+func newHarnessCfg(t *testing.T, cfg harnessConfig) *harness {
+	t.Helper()
 	ctx := context.Background()
+	seed, fromVersion := cfg.seed, cfg.fromVersion
 
 	admin, err := pgxpool.New(ctx, adminURL())
 	if err != nil {
@@ -74,6 +103,22 @@ func newHarness(t *testing.T) *harness {
 
 	testURL := replaceDBName(adminURL(), dbName)
 
+	if seed != nil {
+		if err := db.MigrateTo(testURL, fromVersion); err != nil {
+			dropDB(ctx, admin, dbName)
+			admin.Close()
+			t.Fatalf("migrate to %d: %v", fromVersion, err)
+		}
+		seedPool, err := db.Connect(ctx, testURL)
+		if err != nil {
+			dropDB(ctx, admin, dbName)
+			admin.Close()
+			t.Fatalf("connect for seed: %v", err)
+		}
+		seed(ctx, seedPool)
+		seedPool.Close()
+	}
+
 	if err := db.Migrate(testURL); err != nil {
 		dropDB(ctx, admin, dbName)
 		admin.Close()
@@ -88,10 +133,11 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	hash, _ := bcrypt.GenerateFromPassword([]byte(testPassword), bcrypt.DefaultCost)
-	authn := auth.New(string(hash), []byte("test-signing-key"))
+	authn := auth.New(string(hash), []byte("test-signing-key"), cfg.authOpts...)
 	fakeHost := host.NewFakeHost()
 	fakeProber := checker.NewFakeProber()
-	srv := httpapi.NewServer(pool, authn, fakeHost, fakeProber)
+	fakeFetcher := checker.NewFakeFetcher()
+	srv := httpapi.NewServer(pool, authn, fakeHost, fakeProber, fakeFetcher)
 
 	ts := httptest.NewServer(srv.Router(nil))
 
@@ -101,11 +147,14 @@ func newHarness(t *testing.T) *harness {
 		ts:      ts,
 		host:    fakeHost,
 		prober:  fakeProber,
+		fetcher: fakeFetcher,
 		dbName:  dbName,
 		adminDB: admin,
 		pool:    pool,
 	}
 	t.Cleanup(func() {
+		// Let create-time background work finish before the DB is dropped.
+		srv.WaitBackgroundForTest()
 		ts.Close()
 		pool.Close()
 		dropDB(context.Background(), admin, dbName)
@@ -220,6 +269,19 @@ func decode(t *testing.T, resp *http.Response, v interface{}) {
 	defer resp.Body.Close()
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode response: %v", err)
+	}
+}
+
+// decodeItems reads a paged list envelope ({"items": [...], ...}) into v and
+// closes the response.
+func decodeItems(t *testing.T, resp *http.Response, v interface{}) {
+	t.Helper()
+	var env struct {
+		Items json.RawMessage `json:"items"`
+	}
+	decode(t, resp, &env)
+	if err := json.Unmarshal(env.Items, v); err != nil {
+		t.Fatalf("decode items: %v", err)
 	}
 }
 

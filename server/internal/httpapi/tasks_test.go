@@ -1,25 +1,26 @@
 package httpapi_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type taskResp struct {
-	ID          int64      `json:"id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Status      string     `json:"status"`
-	Priority    string     `json:"priority"`
-	Position    int32      `json:"position"`
-	DueAt       *time.Time `json:"due_at"`
-	ProjectID   *int64     `json:"project_id"`
-}
-
-type projectResp struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID              int64          `json:"id"`
+	Title           string         `json:"title"`
+	Description     string         `json:"description"`
+	Status          string         `json:"status"`
+	Priority        string         `json:"priority"`
+	Position        int32          `json:"position"`
+	DueAt           *time.Time     `json:"due_at"`
+	ArchivedAt      *time.Time     `json:"archived_at"`
+	Labels          []labelResp    `json:"labels"`
+	Subtasks        []subtaskResp  `json:"subtasks"`
+	SubtaskProgress map[string]int `json:"subtask_progress"`
 }
 
 func TestTaskCreateWithTitle(t *testing.T) {
@@ -147,31 +148,74 @@ func TestTaskSetDueDate(t *testing.T) {
 	}
 }
 
-func TestTaskGroupIntoProject(t *testing.T) {
+func TestProjectsRemoved(t *testing.T) {
 	h := newHarness(t)
-	pr := h.do(http.MethodPost, "/api/projects", map[string]string{"name": "Home"})
-	mustStatus(t, pr, http.StatusCreated)
-	var project projectResp
-	decode(t, pr, &project)
-
-	resp := h.do(http.MethodPost, "/api/tasks", map[string]interface{}{
-		"title":      "mow the lawn",
-		"project_id": project.ID,
-	})
-	mustStatus(t, resp, http.StatusCreated)
-	var task taskResp
-	decode(t, resp, &task)
-	if task.ProjectID == nil || *task.ProjectID != project.ID {
-		t.Errorf("project_id = %v, want %d", task.ProjectID, project.ID)
+	for _, req := range []struct{ method, path string }{
+		{http.MethodGet, "/api/projects"},
+		{http.MethodPost, "/api/projects"},
+		{http.MethodDelete, "/api/projects/1"},
+	} {
+		r := h.do(req.method, req.path, map[string]string{"name": "Home"})
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotFound && r.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s status = %d, want 404/405", req.method, req.path, r.StatusCode)
+		}
 	}
 
-	// List projects includes it.
-	lr := h.do(http.MethodGet, "/api/projects", nil)
-	mustStatus(t, lr, http.StatusOK)
-	var projects []projectResp
-	decode(t, lr, &projects)
-	if len(projects) != 1 {
-		t.Fatalf("expected 1 project, got %d", len(projects))
+	// Create rejects project_id as an unknown field.
+	r := h.do(http.MethodPost, "/api/tasks", map[string]interface{}{"title": "x", "project_id": 1})
+	mustStatus(t, r, http.StatusBadRequest)
+
+	// The response no longer carries project_id at all.
+	task := h.newTask("mow the lawn")
+	lr := h.do(http.MethodGet, "/api/tasks", nil)
+	var raw []map[string]interface{}
+	decode(t, lr, &raw)
+	if len(raw) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(raw))
+	}
+	if _, ok := raw[0]["project_id"]; ok {
+		t.Error("task response still includes project_id")
+	}
+
+	// Update ignores a stray project_id and keeps the other fields.
+	pr := h.do(http.MethodPatch, path("/api/tasks/", task.ID), map[string]interface{}{
+		"project_id": 7,
+		"title":      "mow the lawn today",
+	})
+	mustStatus(t, pr, http.StatusOK)
+	var updated taskResp
+	decode(t, pr, &updated)
+	if updated.Title != "mow the lawn today" {
+		t.Errorf("title = %q", updated.Title)
+	}
+}
+
+// TestTaskFieldsSurviveProjectRemoval seeds a project-linked task under the
+// pre-removal schema (version 8) and asserts every other field survives the
+// migration that drops projects.
+func TestTaskFieldsSurviveProjectRemoval(t *testing.T) {
+	due := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	h := newHarnessSeeded(t, 8, func(ctx context.Context, pool *pgxpool.Pool) {
+		var pid int64
+		if err := pool.QueryRow(ctx, `INSERT INTO projects (name) VALUES ('Home') RETURNING id`).Scan(&pid); err != nil {
+			t.Fatalf("seed project: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO tasks (title, description, status, priority, due_at, position, project_id)
+			 VALUES ('legacy', 'kept detail', 'doing', 'high', $1, 3, $2)`, due, pid); err != nil {
+			t.Fatalf("seed task: %v", err)
+		}
+	})
+
+	tasks := h.tasksByStatus("doing")
+	if len(tasks) != 1 {
+		t.Fatalf("expected the seeded task to survive, got %+v", tasks)
+	}
+	got := tasks[0]
+	if got.Title != "legacy" || got.Description != "kept detail" || got.Priority != "high" ||
+		got.Position != 3 || got.DueAt == nil || !got.DueAt.Equal(due) {
+		t.Errorf("task fields changed across migration: %+v", got)
 	}
 }
 

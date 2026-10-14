@@ -7,14 +7,36 @@ package dbgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bookmarkHealthSummary = `-- name: BookmarkHealthSummary :one
+SELECT
+    count(*) FILTER (WHERE health = 'up')      AS up,
+    count(*) FILTER (WHERE health = 'down')    AS down,
+    count(*) FILTER (WHERE health = 'unknown') AS unknown
+FROM bookmarks
+`
+
+type BookmarkHealthSummaryRow struct {
+	Up      int64 `json:"up"`
+	Down    int64 `json:"down"`
+	Unknown int64 `json:"unknown"`
+}
+
+func (q *Queries) BookmarkHealthSummary(ctx context.Context) (BookmarkHealthSummaryRow, error) {
+	row := q.db.QueryRow(ctx, bookmarkHealthSummary)
+	var i BookmarkHealthSummaryRow
+	err := row.Scan(&i.Up, &i.Down, &i.Unknown)
+	return i, err
+}
+
 const createBookmark = `-- name: CreateBookmark :one
 INSERT INTO bookmarks (name, url, icon)
 VALUES ($1, $2, $3)
-RETURNING id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at
+RETURNING id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at, fetched_title, fetched_favicon_url, click_count, last_clicked_at
 `
 
 type CreateBookmarkParams struct {
@@ -37,6 +59,10 @@ func (q *Queries) CreateBookmark(ctx context.Context, arg CreateBookmarkParams) 
 		&i.LastCheckedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FetchedTitle,
+		&i.FetchedFaviconUrl,
+		&i.ClickCount,
+		&i.LastClickedAt,
 	)
 	return i, err
 }
@@ -51,7 +77,7 @@ func (q *Queries) DeleteBookmark(ctx context.Context, id int64) error {
 }
 
 const getBookmark = `-- name: GetBookmark :one
-SELECT id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at FROM bookmarks WHERE id = $1
+SELECT id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at, fetched_title, fetched_favicon_url, click_count, last_clicked_at FROM bookmarks WHERE id = $1
 `
 
 func (q *Queries) GetBookmark(ctx context.Context, id int64) (Bookmark, error) {
@@ -68,12 +94,16 @@ func (q *Queries) GetBookmark(ctx context.Context, id int64) (Bookmark, error) {
 		&i.LastCheckedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FetchedTitle,
+		&i.FetchedFaviconUrl,
+		&i.ClickCount,
+		&i.LastClickedAt,
 	)
 	return i, err
 }
 
 const listBookmarks = `-- name: ListBookmarks :many
-SELECT id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at FROM bookmarks
+SELECT id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at, fetched_title, fetched_favicon_url, click_count, last_clicked_at FROM bookmarks
 ORDER BY created_at ASC, id ASC
 `
 
@@ -97,6 +127,90 @@ func (q *Queries) ListBookmarks(ctx context.Context) ([]Bookmark, error) {
 			&i.LastCheckedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.FetchedTitle,
+			&i.FetchedFaviconUrl,
+			&i.ClickCount,
+			&i.LastClickedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBookmarksByClicks = `-- name: ListBookmarksByClicks :many
+SELECT id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at, fetched_title, fetched_favicon_url, click_count, last_clicked_at FROM bookmarks
+ORDER BY click_count DESC, last_clicked_at DESC NULLS LAST, created_at ASC, id ASC
+`
+
+// Most-visited first; ties go to the more recently opened, and never-opened
+// bookmarks keep creation order so the sort is stable.
+func (q *Queries) ListBookmarksByClicks(ctx context.Context) ([]Bookmark, error) {
+	rows, err := q.db.Query(ctx, listBookmarksByClicks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Bookmark{}
+	for rows.Next() {
+		var i Bookmark
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Url,
+			&i.Icon,
+			&i.Health,
+			&i.LastStatus,
+			&i.LastLatencyMs,
+			&i.LastCheckedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FetchedTitle,
+			&i.FetchedFaviconUrl,
+			&i.ClickCount,
+			&i.LastClickedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDownBookmarks = `-- name: ListDownBookmarks :many
+SELECT id, name, url, last_checked_at FROM bookmarks
+WHERE health = 'down'
+ORDER BY name ASC, id ASC
+`
+
+type ListDownBookmarksRow struct {
+	ID            int64      `json:"id"`
+	Name          string     `json:"name"`
+	Url           string     `json:"url"`
+	LastCheckedAt *time.Time `json:"last_checked_at"`
+}
+
+func (q *Queries) ListDownBookmarks(ctx context.Context) ([]ListDownBookmarksRow, error) {
+	rows, err := q.db.Query(ctx, listDownBookmarks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDownBookmarksRow{}
+	for rows.Next() {
+		var i ListDownBookmarksRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Url,
+			&i.LastCheckedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -116,7 +230,7 @@ SET health          = $2,
     last_checked_at = now(),
     updated_at      = now()
 WHERE id = $1
-RETURNING id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at
+RETURNING id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at, fetched_title, fetched_favicon_url, click_count, last_clicked_at
 `
 
 type RecordBookmarkCheckParams struct {
@@ -146,6 +260,65 @@ func (q *Queries) RecordBookmarkCheck(ctx context.Context, arg RecordBookmarkChe
 		&i.LastCheckedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FetchedTitle,
+		&i.FetchedFaviconUrl,
+		&i.ClickCount,
+		&i.LastClickedAt,
+	)
+	return i, err
+}
+
+const recordBookmarkClick = `-- name: RecordBookmarkClick :execrows
+UPDATE bookmarks
+SET click_count     = click_count + 1,
+    last_clicked_at = now()
+WHERE id = $1
+`
+
+// Count one open. Not an edit, so updated_at is left alone.
+func (q *Queries) RecordBookmarkClick(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, recordBookmarkClick, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordBookmarkMeta = `-- name: RecordBookmarkMeta :one
+UPDATE bookmarks
+SET fetched_title       = NULLIF($1::text, ''),
+    fetched_favicon_url = NULLIF($2::text, ''),
+    updated_at          = now()
+WHERE id = $3
+RETURNING id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at, fetched_title, fetched_favicon_url, click_count, last_clicked_at
+`
+
+type RecordBookmarkMetaParams struct {
+	FetchedTitle      string `json:"fetched_title"`
+	FetchedFaviconUrl string `json:"fetched_favicon_url"`
+	ID                int64  `json:"id"`
+}
+
+// Persist fetched page metadata without touching Owner-edited fields (name,
+// icon). Empty values are stored as NULL.
+func (q *Queries) RecordBookmarkMeta(ctx context.Context, arg RecordBookmarkMetaParams) (Bookmark, error) {
+	row := q.db.QueryRow(ctx, recordBookmarkMeta, arg.FetchedTitle, arg.FetchedFaviconUrl, arg.ID)
+	var i Bookmark
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Url,
+		&i.Icon,
+		&i.Health,
+		&i.LastStatus,
+		&i.LastLatencyMs,
+		&i.LastCheckedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FetchedTitle,
+		&i.FetchedFaviconUrl,
+		&i.ClickCount,
+		&i.LastClickedAt,
 	)
 	return i, err
 }
@@ -157,7 +330,7 @@ SET name       = $2,
     icon       = $4,
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at
+RETURNING id, name, url, icon, health, last_status, last_latency_ms, last_checked_at, created_at, updated_at, fetched_title, fetched_favicon_url, click_count, last_clicked_at
 `
 
 type UpdateBookmarkParams struct {
@@ -186,6 +359,10 @@ func (q *Queries) UpdateBookmark(ctx context.Context, arg UpdateBookmarkParams) 
 		&i.LastCheckedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.FetchedTitle,
+		&i.FetchedFaviconUrl,
+		&i.ClickCount,
+		&i.LastClickedAt,
 	)
 	return i, err
 }

@@ -45,6 +45,29 @@ func (q *Queries) AddTagToResources(ctx context.Context, arg AddTagToResourcesPa
 	return err
 }
 
+const countResources = `-- name: CountResources :one
+SELECT count(*) FROM resources r
+WHERE ($1::bigint IS NULL OR r.root_id = $1::bigint)
+  AND ($2::text IS NULL OR r.path LIKE $2::text)
+  AND ($3::text IS NULL OR EXISTS (
+        SELECT 1 FROM resource_tags rt
+        WHERE rt.resource_id = r.id AND rt.tag = $3::text))
+`
+
+type CountResourcesParams struct {
+	RootID     pgtype.Int8 `json:"root_id"`
+	DirPattern pgtype.Text `json:"dir_pattern"`
+	Tag        pgtype.Text `json:"tag"`
+}
+
+// The total for the same filter set as ListResourcesPage.
+func (q *Queries) CountResources(ctx context.Context, arg CountResourcesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countResources, arg.RootID, arg.DirPattern, arg.Tag)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createManagedRoot = `-- name: CreateManagedRoot :one
 INSERT INTO managed_roots (path)
 VALUES ($1)
@@ -261,67 +284,6 @@ func (q *Queries) ListResourceIDsByRoot(ctx context.Context, rootID int64) ([]Li
 	return items, nil
 }
 
-const listResourceIDsByTag = `-- name: ListResourceIDsByTag :many
-SELECT resource_id FROM resource_tags WHERE tag = $1
-`
-
-func (q *Queries) ListResourceIDsByTag(ctx context.Context, tag string) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listResourceIDsByTag, tag)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []int64{}
-	for rows.Next() {
-		var resource_id int64
-		if err := rows.Scan(&resource_id); err != nil {
-			return nil, err
-		}
-		items = append(items, resource_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listResources = `-- name: ListResources :many
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at FROM resources
-ORDER BY path ASC
-`
-
-func (q *Queries) ListResources(ctx context.Context) ([]Resource, error) {
-	rows, err := q.db.Query(ctx, listResources)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Resource{}
-	for rows.Next() {
-		var i Resource
-		if err := rows.Scan(
-			&i.ID,
-			&i.RootID,
-			&i.Path,
-			&i.Name,
-			&i.Size,
-			&i.IsDir,
-			&i.ModifiedAt,
-			&i.State,
-			&i.Note,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listResourcesByIDs = `-- name: ListResourcesByIDs :many
 SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at FROM resources
 WHERE id = ANY($1::bigint[])
@@ -360,14 +322,36 @@ func (q *Queries) ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resour
 	return items, nil
 }
 
-const listResourcesByRoot = `-- name: ListResourcesByRoot :many
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at FROM resources
-WHERE root_id = $1
-ORDER BY path ASC
+const listResourcesPage = `-- name: ListResourcesPage :many
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at FROM resources r
+WHERE ($1::bigint IS NULL OR r.root_id = $1::bigint)
+  AND ($2::text IS NULL OR r.path LIKE $2::text)
+  AND ($3::text IS NULL OR EXISTS (
+        SELECT 1 FROM resource_tags rt
+        WHERE rt.resource_id = r.id AND rt.tag = $3::text))
+ORDER BY r.path ASC
+LIMIT $5 OFFSET $4
 `
 
-func (q *Queries) ListResourcesByRoot(ctx context.Context, rootID int64) ([]Resource, error) {
-	rows, err := q.db.Query(ctx, listResourcesByRoot, rootID)
+type ListResourcesPageParams struct {
+	RootID     pgtype.Int8 `json:"root_id"`
+	DirPattern pgtype.Text `json:"dir_pattern"`
+	Tag        pgtype.Text `json:"tag"`
+	PageOffset int32       `json:"page_offset"`
+	PageLimit  int32       `json:"page_limit"`
+}
+
+// One page of Resources under the optional root / directory-prefix / tag
+// filters, ordered by path. The prefix is an already-escaped LIKE pattern
+// (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL.
+func (q *Queries) ListResourcesPage(ctx context.Context, arg ListResourcesPageParams) ([]Resource, error) {
+	rows, err := q.db.Query(ctx, listResourcesPage,
+		arg.RootID,
+		arg.DirPattern,
+		arg.Tag,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -422,6 +406,32 @@ func (q *Queries) ListTagsForResource(ctx context.Context, resourceID int64) ([]
 	return items, nil
 }
 
+const listTagsForResources = `-- name: ListTagsForResources :many
+SELECT resource_id, tag FROM resource_tags
+WHERE resource_id = ANY($1::bigint[])
+ORDER BY tag ASC
+`
+
+func (q *Queries) ListTagsForResources(ctx context.Context, ids []int64) ([]ResourceTag, error) {
+	rows, err := q.db.Query(ctx, listTagsForResources, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ResourceTag{}
+	for rows.Next() {
+		var i ResourceTag
+		if err := rows.Scan(&i.ResourceID, &i.Tag); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markResourceMissing = `-- name: MarkResourceMissing :exec
 UPDATE resources
 SET state = 'missing', updated_at = now()
@@ -445,6 +455,24 @@ type RemoveResourceTagParams struct {
 func (q *Queries) RemoveResourceTag(ctx context.Context, arg RemoveResourceTagParams) error {
 	_, err := q.db.Exec(ctx, removeResourceTag, arg.ResourceID, arg.Tag)
 	return err
+}
+
+const resourceSummary = `-- name: ResourceSummary :one
+SELECT count(*)                                   AS total,
+       count(*) FILTER (WHERE state = 'missing') AS missing
+FROM resources
+`
+
+type ResourceSummaryRow struct {
+	Total   int64 `json:"total"`
+	Missing int64 `json:"missing"`
+}
+
+func (q *Queries) ResourceSummary(ctx context.Context) (ResourceSummaryRow, error) {
+	row := q.db.QueryRow(ctx, resourceSummary)
+	var i ResourceSummaryRow
+	err := row.Scan(&i.Total, &i.Missing)
+	return i, err
 }
 
 const updateResourceNote = `-- name: UpdateResourceNote :one

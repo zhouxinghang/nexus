@@ -1,6 +1,6 @@
 # 01: Remove Projects
 
-Status: ready-for-agent
+Status: done
 
 **What to build:** Remove the project/list concept from Tasks. Drop the
 `projects` table, the `tasks.project_id` column and FK, the `/api/projects`
@@ -14,23 +14,23 @@ this aligns code with the domain.
 
 ## Acceptance criteria
 
-- [ ] Migration drops `tasks.project_id` (and `tasks_project_idx`), the
+- [x] Migration drops `tasks.project_id` (and `tasks_project_idx`), the
       `projects` table, and the FK — **preserving all other Task fields**
       (title, status, position, description, priority, due_at, timestamps). A
       working `down` migration recreates `projects` + a nullable `project_id`
       (note: data in dropped tables can't be resurrected).
-- [ ] Remove `/api/projects` routes and `handleCreateProject` /
+- [x] Remove `/api/projects` routes and `handleCreateProject` /
       `handleListProjects` / `handleDeleteProject`.
-- [ ] Drop `project_id` from `CreateTask` / `UpdateTask` sqlc params and the
+- [x] Drop `project_id` from `CreateTask` / `UpdateTask` sqlc params and the
       regenerated code, from `taskWriteRequest`, from the `UpdateTask` raw-field
       handling, and from `taskResponse` (`toTaskResponse`).
-- [ ] Remove the project composer, project filter, `projectName`, and the
+- [x] Remove the project composer, project filter, `projectName`, and the
       `Project` type / `projectId` / `projectFilter` state from
       `web/src/pages/Tasks.tsx`.
-- [ ] Update existing tasks tests that reference projects; assert `/api/projects`
+- [x] Update existing tasks tests that reference projects; assert `/api/projects`
       is gone (404), task create/update reject/ignore `project_id`, and the task
       response omits it. Assert existing-task fields survive the migration.
-- [ ] `CONTEXT.md`'s Task definition no longer implies a project linkage (final
+- [x] `CONTEXT.md`'s Task definition no longer implies a project linkage (final
       wording can land with ticket 03's glossary update, but don't leave it
       claiming projects exist).
 
@@ -40,3 +40,15 @@ this aligns code with the domain.
   for a single-Owner app. Do it first — it simplifies the Task model that
   archive/labels/subtasks all touch.
 - `go test ./...` and `sqlc generate` must be clean after regeneration.
+
+## Comments
+
+- Implemented: migration `000009_tasks_drop_projects` (working down migration
+  recreates `projects` + nullable `project_id`; dropped rows aren't
+  resurrected). `/api/projects` routes and handlers removed; `project_id`
+  gone from sqlc params, request, and response. Create rejects `project_id`
+  (unknown field → 400); PATCH ignores it.
+- Migration survival is tested by seeding a project-linked task at schema v8
+  (`newHarnessSeeded` + `db.MigrateTo`) and asserting its fields after the
+  remaining migrations (`TestTaskFieldsSurviveProjectRemoval`).
+- `CONTEXT.md` Task definition updated (no project linkage).

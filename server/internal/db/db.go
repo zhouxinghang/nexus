@@ -47,6 +47,25 @@ func Migrate(databaseURL string) error {
 	return nil
 }
 
+// MigrateTo migrates the database to exactly the given schema version (up or
+// down). Tests use it to seed data under an older schema and then assert the
+// rows survive the remaining up migrations.
+func MigrateTo(databaseURL string, version uint) error {
+	src, err := iofs.New(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("load migrations: %w", err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", src, pgxURL(databaseURL))
+	if err != nil {
+		return fmt.Errorf("init migrate: %w", err)
+	}
+	defer m.Close()
+	if err := m.Migrate(version); err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("migrate to %d: %w", version, err)
+	}
+	return nil
+}
+
 // pgxURL ensures the scheme is the one the pgx/v5 migrate driver registers for.
 func pgxURL(databaseURL string) string {
 	// The pgx/v5 driver registers under "pgx5". Rewrite the common

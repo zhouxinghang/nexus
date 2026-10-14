@@ -6,6 +6,15 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"nexus/internal/db/dbgen"
+)
+
+// Journal page sizes: the default page and the hard cap on ?limit=.
+const (
+	journalPageDefault = 50
+	journalPageMax     = 200
 )
 
 func (s *Server) registerJournalRoutes(r chi.Router) {
@@ -45,30 +54,60 @@ func (s *Server) handleCreateJournalEntry(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleListJournalEntries returns one keyset page of the stream (or of the
+// ?q= search matches), newest first: {"items": [...], "next_cursor": ...}.
+// One extra row is fetched to tell whether another page follows.
 func (s *Server) handleListJournalEntries(w http.ResponseWriter, r *http.Request) {
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-
-	out := []journalEntryResponse{}
-	if query != "" {
-		rows, err := s.queries.SearchJournalEntries(r.Context(), likeContains(query))
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not search entries")
-			return
-		}
-		for _, e := range rows {
-			out = append(out, journalEntryResponse{ID: e.ID, Body: e.Body, CreatedAt: e.CreatedAt})
-		}
-	} else {
-		rows, err := s.queries.ListJournalEntries(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not list entries")
-			return
-		}
-		for _, e := range rows {
-			out = append(out, journalEntryResponse{ID: e.ID, Body: e.Body, CreatedAt: e.CreatedAt})
-		}
+	q := r.URL.Query()
+	query := strings.TrimSpace(q.Get("q"))
+	limit, err := parseLimit(q, journalPageDefault, journalPageMax)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid limit")
+		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	cursor, hasCursor, err := parseCursor(q)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
+	var cursorAt *time.Time
+	var cursorID pgtype.Int8
+	if hasCursor {
+		cursorAt = &cursor.CreatedAt
+		cursorID = pgtype.Int8{Int64: cursor.ID, Valid: true}
+	}
+
+	var rows []dbgen.JournalEntry
+	if query != "" {
+		rows, err = s.queries.SearchJournalEntries(r.Context(), dbgen.SearchJournalEntriesParams{
+			Pattern:         likeContains(query),
+			CursorCreatedAt: cursorAt,
+			CursorID:        cursorID,
+			PageLimit:       limit + 1,
+		})
+	} else {
+		rows, err = s.queries.ListJournalEntries(r.Context(), dbgen.ListJournalEntriesParams{
+			CursorCreatedAt: cursorAt,
+			CursorID:        cursorID,
+			PageLimit:       limit + 1,
+		})
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list entries")
+		return
+	}
+
+	page := keysetPage[journalEntryResponse]{Items: []journalEntryResponse{}}
+	if len(rows) > int(limit) {
+		rows = rows[:limit]
+		last := rows[len(rows)-1]
+		next := timeIDCursor{CreatedAt: last.CreatedAt, ID: last.ID}.encode()
+		page.NextCursor = &next
+	}
+	for _, e := range rows {
+		page.Items = append(page.Items, journalEntryResponse{ID: e.ID, Body: e.Body, CreatedAt: e.CreatedAt})
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 // likeContains builds a case-insensitive "contains" pattern for an ILIKE

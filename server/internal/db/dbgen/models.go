@@ -186,16 +186,20 @@ func (ns NullTaskStatus) Value() (driver.Value, error) {
 }
 
 type Bookmark struct {
-	ID            int64          `json:"id"`
-	Name          string         `json:"name"`
-	Url           string         `json:"url"`
-	Icon          string         `json:"icon"`
-	Health        BookmarkHealth `json:"health"`
-	LastStatus    pgtype.Int4    `json:"last_status"`
-	LastLatencyMs pgtype.Int8    `json:"last_latency_ms"`
-	LastCheckedAt *time.Time     `json:"last_checked_at"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	ID                int64          `json:"id"`
+	Name              string         `json:"name"`
+	Url               string         `json:"url"`
+	Icon              string         `json:"icon"`
+	Health            BookmarkHealth `json:"health"`
+	LastStatus        pgtype.Int4    `json:"last_status"`
+	LastLatencyMs     pgtype.Int8    `json:"last_latency_ms"`
+	LastCheckedAt     *time.Time     `json:"last_checked_at"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	FetchedTitle      pgtype.Text    `json:"fetched_title"`
+	FetchedFaviconUrl pgtype.Text    `json:"fetched_favicon_url"`
+	ClickCount        int64          `json:"click_count"`
+	LastClickedAt     *time.Time     `json:"last_clicked_at"`
 }
 
 type FileAuditLog struct {
@@ -210,6 +214,13 @@ type FileAuditLog struct {
 type JournalEntry struct {
 	ID        int64     `json:"id"`
 	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type Label struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Color     string    `json:"color"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -237,12 +248,6 @@ type MetricSample struct {
 	Containers []byte    `json:"containers"`
 }
 
-type Project struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 type Resource struct {
 	ID         int64         `json:"id"`
 	RootID     int64         `json:"root_id"`
@@ -262,15 +267,30 @@ type ResourceTag struct {
 	Tag        string `json:"tag"`
 }
 
+type Subtask struct {
+	ID        int64     `json:"id"`
+	TaskID    int64     `json:"task_id"`
+	Title     string    `json:"title"`
+	Done      bool      `json:"done"`
+	Position  int32     `json:"position"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type Task struct {
 	ID          int64        `json:"id"`
 	Title       string       `json:"title"`
 	Status      TaskStatus   `json:"status"`
 	DueAt       *time.Time   `json:"due_at"`
-	ProjectID   pgtype.Int8  `json:"project_id"`
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
 	Position    int32        `json:"position"`
 	Description string       `json:"description"`
 	Priority    TaskPriority `json:"priority"`
+	ArchivedAt  *time.Time   `json:"archived_at"`
+}
+
+type TaskLabel struct {
+	TaskID  int64 `json:"task_id"`
+	LabelID int64 `json:"label_id"`
 }

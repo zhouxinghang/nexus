@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import {
@@ -48,6 +48,11 @@ type Resource = {
   note: string;
   tags: string[];
 };
+
+type ResourcePage = { items: Resource[]; total: number; limit: number; offset: number };
+
+// Resources per "load more" page.
+const RESOURCE_PAGE = 200;
 
 function bytes(n: number): string {
   const units = ["B", "KB", "MB", "GB"];
@@ -173,6 +178,11 @@ function parentDir(r: Resource): string {
 export default function Files() {
   const [roots, setRoots] = useState<Root[]>([]);
   const [resources, setResources] = useState<Resource[]>([]);
+  // Total Resources matching the root/tag filters on the server; `resources`
+  // holds the pages loaded so far.
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadedCount = useRef(0);
   const [newRoot, setNewRoot] = useState("");
   const [rootFilter, setRootFilter] = useState<number | "">("");
   const [tagFilter, setTagFilter] = useState("");
@@ -205,19 +215,52 @@ export default function Files() {
   async function loadRoots() {
     setRoots(await api.get<Root[]>("/api/files/roots"));
   }
-  async function loadResources() {
+  function resourcesPath(offset: number, limit: number) {
     const params = new URLSearchParams();
     if (rootFilter !== "") params.set("root_id", String(rootFilter));
     if (tagFilter) params.set("tag", tagFilter);
-    const q = params.toString();
-    setResources(await api.get<Resource[]>(`/api/files/resources${q ? `?${q}` : ""}`));
+    params.set("offset", String(offset));
+    params.set("limit", String(limit));
+    return `/api/files/resources?${params}`;
+  }
+  // loadResources (re)fetches from the top. After a mutation it keeps as many
+  // rows as were already loaded, so "load more" progress isn't lost; a filter
+  // change (reset) starts over at one page.
+  async function loadResources(reset = false) {
+    const limit = reset ? RESOURCE_PAGE : Math.max(RESOURCE_PAGE, loadedCount.current);
+    try {
+      const page = await api.get<ResourcePage>(resourcesPath(0, limit));
+      loadedCount.current = page.items.length;
+      setResources(page.items);
+      setTotal(page.total);
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+  async function loadMoreResources() {
+    setLoadingMore(true);
+    try {
+      const page = await api.get<ResourcePage>(
+        resourcesPath(resources.length, RESOURCE_PAGE),
+      );
+      setResources((prev) => {
+        const next = [...prev, ...page.items];
+        loadedCount.current = next.length;
+        return next;
+      });
+      setTotal(page.total);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setLoadingMore(false);
+    }
   }
 
   useEffect(() => {
     loadRoots();
   }, []);
   useEffect(() => {
-    loadResources();
+    loadResources(true);
   }, [rootFilter, tagFilter]);
 
   // Drop checked ids that no longer exist in the current resource set so the
@@ -756,6 +799,21 @@ export default function Files() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          {resources.length > 0 && (
+            <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5 text-xs text-muted-foreground">
+              <span>
+                Showing {resources.length.toLocaleString()} of {total.toLocaleString()}
+                {kindFilter !== "all" && " (type filter applies to loaded rows)"}
+              </span>
+              {resources.length < total ? (
+                <Button variant="outline" size="xs" loading={loadingMore} onClick={loadMoreResources}>
+                  Load more
+                </Button>
+              ) : (
+                <span>End of list</span>
+              )}
             </div>
           )}
         </Card>

@@ -7,59 +7,116 @@ package dbgen
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
 	AddResourceTag(ctx context.Context, arg AddResourceTagParams) error
 	AddTagToResources(ctx context.Context, arg AddTagToResourcesParams) error
+	ArchiveDoneTasks(ctx context.Context) (int64, error)
+	// Archiving an already-archived task keeps its original archived_at.
+	ArchiveTask(ctx context.Context, id int64) (Task, error)
+	AttachTaskLabel(ctx context.Context, arg AttachTaskLabelParams) error
+	BookmarkHealthSummary(ctx context.Context) (BookmarkHealthSummaryRow, error)
+	// The total for the same filter set as ListResourcesPage.
+	CountResources(ctx context.Context, arg CountResourcesParams) (int64, error)
 	CreateBookmark(ctx context.Context, arg CreateBookmarkParams) (Bookmark, error)
 	CreateJournalEntry(ctx context.Context, body string) (JournalEntry, error)
+	CreateLabel(ctx context.Context, arg CreateLabelParams) (Label, error)
 	CreateManagedRoot(ctx context.Context, path string) (ManagedRoot, error)
-	CreateProject(ctx context.Context, name string) (Project, error)
-	// New tasks land at the bottom of their column.
+	// New subtasks land at the bottom of their task's checklist.
+	CreateSubtask(ctx context.Context, arg CreateSubtaskParams) (Subtask, error)
+	// New tasks land at the bottom of their column (among active tasks).
 	CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error)
 	DeleteBookmark(ctx context.Context, id int64) error
+	DeleteLabel(ctx context.Context, id int64) (int64, error)
 	DeleteManagedRoot(ctx context.Context, id int64) error
-	DeleteProject(ctx context.Context, id int64) error
 	DeleteResource(ctx context.Context, id int64) error
 	DeleteResourcesByIDs(ctx context.Context, ids []int64) error
+	DeleteSubtask(ctx context.Context, id int64) (int64, error)
 	DeleteTask(ctx context.Context, id int64) error
+	DetachTaskLabel(ctx context.Context, arg DetachTaskLabelParams) error
 	GetBookmark(ctx context.Context, id int64) (Bookmark, error)
+	GetLabel(ctx context.Context, id int64) (Label, error)
 	GetManagedRoot(ctx context.Context, id int64) (ManagedRoot, error)
 	GetResource(ctx context.Context, id int64) (Resource, error)
 	GetResourceByPath(ctx context.Context, path string) (Resource, error)
+	GetSubtask(ctx context.Context, id int64) (Subtask, error)
 	GetTask(ctx context.Context, id int64) (Task, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) (FileAuditLog, error)
 	InsertMetricSample(ctx context.Context, arg InsertMetricSampleParams) (MetricSample, error)
+	LatestJournalEntries(ctx context.Context, limit int32) ([]JournalEntry, error)
+	// The archived view, newest-archived first, with the same optional label filter.
+	ListArchivedTasks(ctx context.Context, labelID pgtype.Int8) ([]Task, error)
 	ListAuditLog(ctx context.Context) ([]FileAuditLog, error)
 	ListBookmarks(ctx context.Context) ([]Bookmark, error)
-	ListJournalEntries(ctx context.Context) ([]JournalEntry, error)
+	// Most-visited first; ties go to the more recently opened, and never-opened
+	// bookmarks keep creation order so the sort is stable.
+	ListBookmarksByClicks(ctx context.Context) ([]Bookmark, error)
+	ListDownBookmarks(ctx context.Context) ([]ListDownBookmarksRow, error)
+	// One page of the stream, newest first. Keyset on (created_at, id): pass the
+	// last row of the previous page as the cursor, or NULLs for the first page.
+	// The stream is append-only, so a cursor never skips or repeats an entry.
+	ListJournalEntries(ctx context.Context, arg ListJournalEntriesParams) ([]JournalEntry, error)
+	ListLabels(ctx context.Context) ([]Label, error)
+	ListLabelsForTasks(ctx context.Context, taskIds []int64) ([]ListLabelsForTasksRow, error)
 	ListManagedRoots(ctx context.Context) ([]ManagedRoot, error)
+	// Display-time downsampling: average the samples in [from_at, to_at] into
+	// fixed-width time buckets aligned to from_at, one row per non-empty bucket,
+	// ascending. Gauges (CPU, memory/disk used, load) are averaged; totals and
+	// cumulative counters (net bytes, uptime) take the bucket's max, i.e. the
+	// latest reading. This is read-path aggregation only — the stored samples and
+	// their retention are untouched.
+	ListMetricSamplesBucketed(ctx context.Context, arg ListMetricSamplesBucketedParams) ([]ListMetricSamplesBucketedRow, error)
 	ListMetricSamplesInRange(ctx context.Context, arg ListMetricSamplesInRangeParams) ([]MetricSample, error)
-	ListProjects(ctx context.Context) ([]Project, error)
 	ListResourceIDsByRoot(ctx context.Context, rootID int64) ([]ListResourceIDsByRootRow, error)
-	ListResourceIDsByTag(ctx context.Context, tag string) ([]int64, error)
-	ListResources(ctx context.Context) ([]Resource, error)
 	ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resource, error)
-	ListResourcesByRoot(ctx context.Context, rootID int64) ([]Resource, error)
+	// One page of Resources under the optional root / directory-prefix / tag
+	// filters, ordered by path. The prefix is an already-escaped LIKE pattern
+	// (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL.
+	ListResourcesPage(ctx context.Context, arg ListResourcesPageParams) ([]Resource, error)
+	ListSubtasksForTasks(ctx context.Context, taskIds []int64) ([]Subtask, error)
 	ListTagsForResource(ctx context.Context, resourceID int64) ([]string, error)
-	ListTasks(ctx context.Context) ([]Task, error)
+	ListTagsForResources(ctx context.Context, ids []int64) ([]ResourceTag, error)
+	// The board: active (non-archived) tasks only, optionally narrowed to those
+	// carrying one label.
+	ListTasks(ctx context.Context, labelID pgtype.Int8) ([]Task, error)
 	MarkResourceMissing(ctx context.Context, id int64) error
 	PruneMetricSamplesBefore(ctx context.Context, takenAt time.Time) (int64, error)
 	// Persist the outcome of a health check without touching Owner-edited fields.
 	RecordBookmarkCheck(ctx context.Context, arg RecordBookmarkCheckParams) (Bookmark, error)
+	// Count one open. Not an edit, so updated_at is left alone.
+	RecordBookmarkClick(ctx context.Context, id int64) (int64, error)
+	// Persist fetched page metadata without touching Owner-edited fields (name,
+	// icon). Empty values are stored as NULL.
+	RecordBookmarkMeta(ctx context.Context, arg RecordBookmarkMetaParams) (Bookmark, error)
 	RemoveResourceTag(ctx context.Context, arg RemoveResourceTagParams) error
+	// Rewrite one task's checklist order (same shape as ReorderTasks). Ids that
+	// belong to a different task are ignored.
+	ReorderSubtasks(ctx context.Context, arg ReorderSubtasksParams) error
 	// Rewrite a column's ordering: every id in the list is placed in the given
 	// column at its array position (used by drag-and-drop, including moves between
-	// columns). Atomic over the whole list.
+	// columns). Atomic over the whole list. Archived tasks are never repositioned.
 	ReorderTasks(ctx context.Context, arg ReorderTasksParams) error
+	ResourceSummary(ctx context.Context) (ResourceSummaryRow, error)
 	// Case-insensitive substring match, language-agnostic (works for CJK). The
 	// caller passes an already-escaped term wrapped in '%'; backslash is the
-	// LIKE escape character. Backed by a GIN trigram index on body.
-	SearchJournalEntries(ctx context.Context, body string) ([]JournalEntry, error)
+	// LIKE escape character. Backed by a GIN trigram index on body. Paged with
+	// the same keyset as ListJournalEntries.
+	SearchJournalEntries(ctx context.Context, arg SearchJournalEntriesParams) ([]JournalEntry, error)
+	// Overview counts over active (non-archived) tasks. Due dates are calendar
+	// days stored as midnight, so "today" is judged by the DB clock's current day:
+	// overdue = due before today, due today = due within today. Done tasks are
+	// never counted as overdue or due.
+	TaskSummary(ctx context.Context) (TaskSummaryRow, error)
+	// An unarchived task returns to the bottom of its column.
+	UnarchiveTask(ctx context.Context, id int64) (Task, error)
 	UpdateBookmark(ctx context.Context, arg UpdateBookmarkParams) (Bookmark, error)
+	UpdateLabel(ctx context.Context, arg UpdateLabelParams) (Label, error)
 	UpdateResourceNote(ctx context.Context, arg UpdateResourceNoteParams) (Resource, error)
 	UpdateResourcePath(ctx context.Context, arg UpdateResourcePathParams) (Resource, error)
+	UpdateSubtask(ctx context.Context, arg UpdateSubtaskParams) (Subtask, error)
 	UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error)
 	UpsertResource(ctx context.Context, arg UpsertResourceParams) (Resource, error)
 }

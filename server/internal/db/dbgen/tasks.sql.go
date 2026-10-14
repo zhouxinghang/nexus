@@ -12,26 +12,124 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createProject = `-- name: CreateProject :one
-INSERT INTO projects (name)
-VALUES ($1)
-RETURNING id, name, created_at
+const archiveDoneTasks = `-- name: ArchiveDoneTasks :execrows
+UPDATE tasks
+SET archived_at = now(),
+    updated_at  = now()
+WHERE status = 'done' AND archived_at IS NULL
 `
 
-func (q *Queries) CreateProject(ctx context.Context, name string) (Project, error) {
-	row := q.db.QueryRow(ctx, createProject, name)
-	var i Project
-	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
+func (q *Queries) ArchiveDoneTasks(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, archiveDoneTasks)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const archiveTask = `-- name: ArchiveTask :one
+UPDATE tasks
+SET archived_at = COALESCE(archived_at, now()),
+    updated_at  = now()
+WHERE id = $1
+RETURNING id, title, status, due_at, created_at, updated_at, position, description, priority, archived_at
+`
+
+// Archiving an already-archived task keeps its original archived_at.
+func (q *Queries) ArchiveTask(ctx context.Context, id int64) (Task, error) {
+	row := q.db.QueryRow(ctx, archiveTask, id)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Status,
+		&i.DueAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Position,
+		&i.Description,
+		&i.Priority,
+		&i.ArchivedAt,
+	)
+	return i, err
+}
+
+const attachTaskLabel = `-- name: AttachTaskLabel :exec
+INSERT INTO task_labels (task_id, label_id)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+`
+
+type AttachTaskLabelParams struct {
+	TaskID  int64 `json:"task_id"`
+	LabelID int64 `json:"label_id"`
+}
+
+func (q *Queries) AttachTaskLabel(ctx context.Context, arg AttachTaskLabelParams) error {
+	_, err := q.db.Exec(ctx, attachTaskLabel, arg.TaskID, arg.LabelID)
+	return err
+}
+
+const createLabel = `-- name: CreateLabel :one
+INSERT INTO labels (name, color)
+VALUES ($1, $2)
+RETURNING id, name, color, created_at
+`
+
+type CreateLabelParams struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+func (q *Queries) CreateLabel(ctx context.Context, arg CreateLabelParams) (Label, error) {
+	row := q.db.QueryRow(ctx, createLabel, arg.Name, arg.Color)
+	var i Label
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Color,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createSubtask = `-- name: CreateSubtask :one
+INSERT INTO subtasks (task_id, title, position)
+VALUES (
+    $1, $2,
+    COALESCE((SELECT MAX(position) + 1 FROM subtasks WHERE task_id = $1), 0)
+)
+RETURNING id, task_id, title, done, position, created_at, updated_at
+`
+
+type CreateSubtaskParams struct {
+	TaskID int64  `json:"task_id"`
+	Title  string `json:"title"`
+}
+
+// New subtasks land at the bottom of their task's checklist.
+func (q *Queries) CreateSubtask(ctx context.Context, arg CreateSubtaskParams) (Subtask, error) {
+	row := q.db.QueryRow(ctx, createSubtask, arg.TaskID, arg.Title)
+	var i Subtask
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.Title,
+		&i.Done,
+		&i.Position,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
 	return i, err
 }
 
 const createTask = `-- name: CreateTask :one
-INSERT INTO tasks (title, description, status, priority, due_at, project_id, position)
+INSERT INTO tasks (title, description, status, priority, due_at, position)
 VALUES (
-    $1, $2, $3, $4, $5, $6,
-    COALESCE((SELECT MAX(position) + 1 FROM tasks WHERE status = $3), 0)
+    $1, $2, $3, $4, $5,
+    COALESCE((SELECT MAX(position) + 1 FROM tasks WHERE status = $3 AND archived_at IS NULL), 0)
 )
-RETURNING id, title, status, due_at, project_id, created_at, updated_at, position, description, priority
+RETURNING id, title, status, due_at, created_at, updated_at, position, description, priority, archived_at
 `
 
 type CreateTaskParams struct {
@@ -40,10 +138,9 @@ type CreateTaskParams struct {
 	Status      TaskStatus   `json:"status"`
 	Priority    TaskPriority `json:"priority"`
 	DueAt       *time.Time   `json:"due_at"`
-	ProjectID   pgtype.Int8  `json:"project_id"`
 }
 
-// New tasks land at the bottom of their column.
+// New tasks land at the bottom of their column (among active tasks).
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
 	row := q.db.QueryRow(ctx, createTask,
 		arg.Title,
@@ -51,7 +148,6 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.Status,
 		arg.Priority,
 		arg.DueAt,
-		arg.ProjectID,
 	)
 	var i Task
 	err := row.Scan(
@@ -59,23 +155,38 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.Title,
 		&i.Status,
 		&i.DueAt,
-		&i.ProjectID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Position,
 		&i.Description,
 		&i.Priority,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
 
-const deleteProject = `-- name: DeleteProject :exec
-DELETE FROM projects WHERE id = $1
+const deleteLabel = `-- name: DeleteLabel :execrows
+DELETE FROM labels WHERE id = $1
 `
 
-func (q *Queries) DeleteProject(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, deleteProject, id)
-	return err
+func (q *Queries) DeleteLabel(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteLabel, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteSubtask = `-- name: DeleteSubtask :execrows
+DELETE FROM subtasks WHERE id = $1
+`
+
+func (q *Queries) DeleteSubtask(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSubtask, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteTask = `-- name: DeleteTask :exec
@@ -87,8 +198,57 @@ func (q *Queries) DeleteTask(ctx context.Context, id int64) error {
 	return err
 }
 
+const detachTaskLabel = `-- name: DetachTaskLabel :exec
+DELETE FROM task_labels WHERE task_id = $1 AND label_id = $2
+`
+
+type DetachTaskLabelParams struct {
+	TaskID  int64 `json:"task_id"`
+	LabelID int64 `json:"label_id"`
+}
+
+func (q *Queries) DetachTaskLabel(ctx context.Context, arg DetachTaskLabelParams) error {
+	_, err := q.db.Exec(ctx, detachTaskLabel, arg.TaskID, arg.LabelID)
+	return err
+}
+
+const getLabel = `-- name: GetLabel :one
+SELECT id, name, color, created_at FROM labels WHERE id = $1
+`
+
+func (q *Queries) GetLabel(ctx context.Context, id int64) (Label, error) {
+	row := q.db.QueryRow(ctx, getLabel, id)
+	var i Label
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Color,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getSubtask = `-- name: GetSubtask :one
+SELECT id, task_id, title, done, position, created_at, updated_at FROM subtasks WHERE id = $1
+`
+
+func (q *Queries) GetSubtask(ctx context.Context, id int64) (Subtask, error) {
+	row := q.db.QueryRow(ctx, getSubtask, id)
+	var i Subtask
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.Title,
+		&i.Done,
+		&i.Position,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getTask = `-- name: GetTask :one
-SELECT id, title, status, due_at, project_id, created_at, updated_at, position, description, priority FROM tasks WHERE id = $1
+SELECT id, title, status, due_at, created_at, updated_at, position, description, priority, archived_at FROM tasks WHERE id = $1
 `
 
 func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
@@ -99,50 +259,28 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 		&i.Title,
 		&i.Status,
 		&i.DueAt,
-		&i.ProjectID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Position,
 		&i.Description,
 		&i.Priority,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
 
-const listProjects = `-- name: ListProjects :many
-SELECT id, name, created_at FROM projects
-ORDER BY created_at ASC, id ASC
+const listArchivedTasks = `-- name: ListArchivedTasks :many
+SELECT id, title, status, due_at, created_at, updated_at, position, description, priority, archived_at FROM tasks
+WHERE archived_at IS NOT NULL
+  AND ($1::bigint IS NULL OR EXISTS (
+        SELECT 1 FROM task_labels tl
+        WHERE tl.task_id = tasks.id AND tl.label_id = $1::bigint))
+ORDER BY archived_at DESC, id DESC
 `
 
-func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
-	rows, err := q.db.Query(ctx, listProjects)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Project{}
-	for rows.Next() {
-		var i Project
-		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listTasks = `-- name: ListTasks :many
-SELECT id, title, status, due_at, project_id, created_at, updated_at, position, description, priority FROM tasks
-ORDER BY
-    CASE status WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 WHEN 'done' THEN 2 END,
-    position ASC, id ASC
-`
-
-func (q *Queries) ListTasks(ctx context.Context) ([]Task, error) {
-	rows, err := q.db.Query(ctx, listTasks)
+// The archived view, newest-archived first, with the same optional label filter.
+func (q *Queries) ListArchivedTasks(ctx context.Context, labelID pgtype.Int8) ([]Task, error) {
+	rows, err := q.db.Query(ctx, listArchivedTasks, labelID)
 	if err != nil {
 		return nil, err
 	}
@@ -155,12 +293,12 @@ func (q *Queries) ListTasks(ctx context.Context) ([]Task, error) {
 			&i.Title,
 			&i.Status,
 			&i.DueAt,
-			&i.ProjectID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Position,
 			&i.Description,
 			&i.Priority,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -172,13 +310,181 @@ func (q *Queries) ListTasks(ctx context.Context) ([]Task, error) {
 	return items, nil
 }
 
+const listLabels = `-- name: ListLabels :many
+SELECT id, name, color, created_at FROM labels
+ORDER BY name ASC, id ASC
+`
+
+func (q *Queries) ListLabels(ctx context.Context) ([]Label, error) {
+	rows, err := q.db.Query(ctx, listLabels)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Label{}
+	for rows.Next() {
+		var i Label
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Color,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLabelsForTasks = `-- name: ListLabelsForTasks :many
+SELECT tl.task_id, l.id, l.name, l.color
+FROM task_labels tl
+JOIN labels l ON l.id = tl.label_id
+WHERE tl.task_id = ANY($1::bigint[])
+ORDER BY l.name ASC, l.id ASC
+`
+
+type ListLabelsForTasksRow struct {
+	TaskID int64  `json:"task_id"`
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Color  string `json:"color"`
+}
+
+func (q *Queries) ListLabelsForTasks(ctx context.Context, taskIds []int64) ([]ListLabelsForTasksRow, error) {
+	rows, err := q.db.Query(ctx, listLabelsForTasks, taskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLabelsForTasksRow{}
+	for rows.Next() {
+		var i ListLabelsForTasksRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.ID,
+			&i.Name,
+			&i.Color,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSubtasksForTasks = `-- name: ListSubtasksForTasks :many
+SELECT id, task_id, title, done, position, created_at, updated_at FROM subtasks
+WHERE task_id = ANY($1::bigint[])
+ORDER BY task_id ASC, position ASC, id ASC
+`
+
+func (q *Queries) ListSubtasksForTasks(ctx context.Context, taskIds []int64) ([]Subtask, error) {
+	rows, err := q.db.Query(ctx, listSubtasksForTasks, taskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Subtask{}
+	for rows.Next() {
+		var i Subtask
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.Title,
+			&i.Done,
+			&i.Position,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTasks = `-- name: ListTasks :many
+SELECT id, title, status, due_at, created_at, updated_at, position, description, priority, archived_at FROM tasks
+WHERE archived_at IS NULL
+  AND ($1::bigint IS NULL OR EXISTS (
+        SELECT 1 FROM task_labels tl
+        WHERE tl.task_id = tasks.id AND tl.label_id = $1::bigint))
+ORDER BY
+    CASE status WHEN 'todo' THEN 0 WHEN 'doing' THEN 1 WHEN 'done' THEN 2 END,
+    position ASC, id ASC
+`
+
+// The board: active (non-archived) tasks only, optionally narrowed to those
+// carrying one label.
+func (q *Queries) ListTasks(ctx context.Context, labelID pgtype.Int8) ([]Task, error) {
+	rows, err := q.db.Query(ctx, listTasks, labelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Task{}
+	for rows.Next() {
+		var i Task
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Status,
+			&i.DueAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Position,
+			&i.Description,
+			&i.Priority,
+			&i.ArchivedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reorderSubtasks = `-- name: ReorderSubtasks :exec
+UPDATE subtasks AS s
+SET position   = v.ord - 1,
+    updated_at = now()
+FROM unnest($2::bigint[]) WITH ORDINALITY AS v(id, ord)
+WHERE s.id = v.id AND s.task_id = $1
+`
+
+type ReorderSubtasksParams struct {
+	TaskID int64   `json:"task_id"`
+	Ids    []int64 `json:"ids"`
+}
+
+// Rewrite one task's checklist order (same shape as ReorderTasks). Ids that
+// belong to a different task are ignored.
+func (q *Queries) ReorderSubtasks(ctx context.Context, arg ReorderSubtasksParams) error {
+	_, err := q.db.Exec(ctx, reorderSubtasks, arg.TaskID, arg.Ids)
+	return err
+}
+
 const reorderTasks = `-- name: ReorderTasks :exec
 UPDATE tasks AS t
 SET status     = $1,
     position   = v.ord - 1,
     updated_at = now()
 FROM unnest($2::bigint[]) WITH ORDINALITY AS v(id, ord)
-WHERE t.id = v.id
+WHERE t.id = v.id AND t.archived_at IS NULL
 `
 
 type ReorderTasksParams struct {
@@ -188,10 +494,135 @@ type ReorderTasksParams struct {
 
 // Rewrite a column's ordering: every id in the list is placed in the given
 // column at its array position (used by drag-and-drop, including moves between
-// columns). Atomic over the whole list.
+// columns). Atomic over the whole list. Archived tasks are never repositioned.
 func (q *Queries) ReorderTasks(ctx context.Context, arg ReorderTasksParams) error {
 	_, err := q.db.Exec(ctx, reorderTasks, arg.Status, arg.Ids)
 	return err
+}
+
+const taskSummary = `-- name: TaskSummary :one
+SELECT
+    count(*) FILTER (WHERE status = 'todo')  AS todo,
+    count(*) FILTER (WHERE status = 'doing') AS doing,
+    count(*) FILTER (WHERE status = 'done')  AS done,
+    count(*) FILTER (WHERE status <> 'done' AND due_at < date_trunc('day', now())) AS overdue,
+    count(*) FILTER (WHERE status <> 'done'
+                       AND due_at >= date_trunc('day', now())
+                       AND due_at <  date_trunc('day', now()) + interval '1 day') AS due_today
+FROM tasks
+WHERE archived_at IS NULL
+`
+
+type TaskSummaryRow struct {
+	Todo     int64 `json:"todo"`
+	Doing    int64 `json:"doing"`
+	Done     int64 `json:"done"`
+	Overdue  int64 `json:"overdue"`
+	DueToday int64 `json:"due_today"`
+}
+
+// Overview counts over active (non-archived) tasks. Due dates are calendar
+// days stored as midnight, so "today" is judged by the DB clock's current day:
+// overdue = due before today, due today = due within today. Done tasks are
+// never counted as overdue or due.
+func (q *Queries) TaskSummary(ctx context.Context) (TaskSummaryRow, error) {
+	row := q.db.QueryRow(ctx, taskSummary)
+	var i TaskSummaryRow
+	err := row.Scan(
+		&i.Todo,
+		&i.Doing,
+		&i.Done,
+		&i.Overdue,
+		&i.DueToday,
+	)
+	return i, err
+}
+
+const unarchiveTask = `-- name: UnarchiveTask :one
+UPDATE tasks AS t
+SET position = CASE
+        WHEN t.archived_at IS NULL THEN t.position
+        ELSE COALESCE((SELECT MAX(t2.position) + 1 FROM tasks t2
+                       WHERE t2.status = t.status AND t2.archived_at IS NULL), 0)
+    END,
+    archived_at = NULL,
+    updated_at  = now()
+WHERE t.id = $1
+RETURNING id, title, status, due_at, created_at, updated_at, position, description, priority, archived_at
+`
+
+// An unarchived task returns to the bottom of its column.
+func (q *Queries) UnarchiveTask(ctx context.Context, id int64) (Task, error) {
+	row := q.db.QueryRow(ctx, unarchiveTask, id)
+	var i Task
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Status,
+		&i.DueAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Position,
+		&i.Description,
+		&i.Priority,
+		&i.ArchivedAt,
+	)
+	return i, err
+}
+
+const updateLabel = `-- name: UpdateLabel :one
+UPDATE labels
+SET name = $2, color = $3
+WHERE id = $1
+RETURNING id, name, color, created_at
+`
+
+type UpdateLabelParams struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+func (q *Queries) UpdateLabel(ctx context.Context, arg UpdateLabelParams) (Label, error) {
+	row := q.db.QueryRow(ctx, updateLabel, arg.ID, arg.Name, arg.Color)
+	var i Label
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Color,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const updateSubtask = `-- name: UpdateSubtask :one
+UPDATE subtasks
+SET title      = $2,
+    done       = $3,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, task_id, title, done, position, created_at, updated_at
+`
+
+type UpdateSubtaskParams struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	Done  bool   `json:"done"`
+}
+
+func (q *Queries) UpdateSubtask(ctx context.Context, arg UpdateSubtaskParams) (Subtask, error) {
+	row := q.db.QueryRow(ctx, updateSubtask, arg.ID, arg.Title, arg.Done)
+	var i Subtask
+	err := row.Scan(
+		&i.ID,
+		&i.TaskID,
+		&i.Title,
+		&i.Done,
+		&i.Position,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateTask = `-- name: UpdateTask :one
@@ -201,10 +632,9 @@ SET title       = $2,
     status      = $4,
     priority    = $5,
     due_at      = $6,
-    project_id  = $7,
     updated_at  = now()
 WHERE id = $1
-RETURNING id, title, status, due_at, project_id, created_at, updated_at, position, description, priority
+RETURNING id, title, status, due_at, created_at, updated_at, position, description, priority, archived_at
 `
 
 type UpdateTaskParams struct {
@@ -214,7 +644,6 @@ type UpdateTaskParams struct {
 	Status      TaskStatus   `json:"status"`
 	Priority    TaskPriority `json:"priority"`
 	DueAt       *time.Time   `json:"due_at"`
-	ProjectID   pgtype.Int8  `json:"project_id"`
 }
 
 func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error) {
@@ -225,7 +654,6 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, e
 		arg.Status,
 		arg.Priority,
 		arg.DueAt,
-		arg.ProjectID,
 	)
 	var i Task
 	err := row.Scan(
@@ -233,12 +661,12 @@ func (q *Queries) UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, e
 		&i.Title,
 		&i.Status,
 		&i.DueAt,
-		&i.ProjectID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Position,
 		&i.Description,
 		&i.Priority,
+		&i.ArchivedAt,
 	)
 	return i, err
 }

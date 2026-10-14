@@ -101,7 +101,7 @@ func TestDeletePermanent(t *testing.T) {
 	// Resource cleaned up — no dangling entry.
 	lr := h.do(http.MethodGet, "/api/files/resources", nil)
 	var remaining []resourceResp
-	decode(t, lr, &remaining)
+	decodeItems(t, lr, &remaining)
 	for _, r := range remaining {
 		if r.ID == id {
 			t.Error("resource still present after byte deletion")
@@ -256,7 +256,7 @@ func TestBatchAddTagTagsManyFiles(t *testing.T) {
 
 	lr := h.do(http.MethodGet, "/api/files/resources", nil)
 	var all []resourceResp
-	decode(t, lr, &all)
+	decodeItems(t, lr, &all)
 	tagged := 0
 	for _, r := range all {
 		for _, tg := range r.Tags {
@@ -295,7 +295,7 @@ func TestBatchDeleteRemovesManyFiles(t *testing.T) {
 	}
 	lr := h.do(http.MethodGet, "/api/files/resources", nil)
 	var remaining []resourceResp
-	decode(t, lr, &remaining)
+	decodeItems(t, lr, &remaining)
 	if len(remaining) != 0 {
 		t.Errorf("resources remain after batch delete: %+v", remaining)
 	}

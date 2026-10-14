@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { Button } from "@/components/ui";
 import {
+  LayoutDashboard,
   FileText,
   Server,
   CheckSquare,
@@ -21,6 +22,7 @@ import {
 import { cn } from "@/lib/api";
 
 const nav = [
+  { to: "/", label: "Overview", icon: LayoutDashboard, hint: "Summary", end: true },
   { to: "/files", label: "Files", icon: FileText, hint: "Resources" },
   { to: "/servers", label: "Servers", icon: Server, hint: "Host vitals" },
   { to: "/tasks", label: "Tasks", icon: CheckSquare, hint: "Board" },
@@ -114,10 +116,11 @@ function SidebarContent({
         </p>
       )}
       <nav className="flex-1 space-y-1">
-        {nav.map(({ to, label, icon: Icon, hint }) => (
+        {nav.map(({ to, label, icon: Icon, hint, end }) => (
           <NavLink
             key={to}
             to={to}
+            end={end}
             title={collapsed ? label : undefined}
             className={({ isActive }) =>
               cn(

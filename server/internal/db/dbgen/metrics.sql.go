@@ -8,6 +8,8 @@ package dbgen
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const insertMetricSample = `-- name: InsertMetricSample :one
@@ -69,6 +71,89 @@ func (q *Queries) InsertMetricSample(ctx context.Context, arg InsertMetricSample
 		&i.Containers,
 	)
 	return i, err
+}
+
+const listMetricSamplesBucketed = `-- name: ListMetricSamplesBucketed :many
+SELECT
+    date_bin($1::interval, taken_at, $2::timestamptz)::timestamptz AS bucket_at,
+    max(id)::bigint                        AS id,
+    avg(cpu_percent)::double precision     AS cpu_percent,
+    max(mem_total)::bigint                 AS mem_total,
+    avg(mem_used)::bigint                  AS mem_used,
+    max(disk_total)::bigint                AS disk_total,
+    avg(disk_used)::bigint                 AS disk_used,
+    max(net_rx)::bigint                    AS net_rx,
+    max(net_tx)::bigint                    AS net_tx,
+    avg(load1)::double precision           AS load1,
+    avg(load5)::double precision           AS load5,
+    avg(load15)::double precision          AS load15,
+    max(uptime_secs)::bigint               AS uptime_secs
+FROM metric_samples
+WHERE taken_at >= $2::timestamptz AND taken_at <= $3::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC
+`
+
+type ListMetricSamplesBucketedParams struct {
+	Bucket pgtype.Interval `json:"bucket"`
+	FromAt time.Time       `json:"from_at"`
+	ToAt   time.Time       `json:"to_at"`
+}
+
+type ListMetricSamplesBucketedRow struct {
+	BucketAt   time.Time `json:"bucket_at"`
+	ID         int64     `json:"id"`
+	CpuPercent float64   `json:"cpu_percent"`
+	MemTotal   int64     `json:"mem_total"`
+	MemUsed    int64     `json:"mem_used"`
+	DiskTotal  int64     `json:"disk_total"`
+	DiskUsed   int64     `json:"disk_used"`
+	NetRx      int64     `json:"net_rx"`
+	NetTx      int64     `json:"net_tx"`
+	Load1      float64   `json:"load1"`
+	Load5      float64   `json:"load5"`
+	Load15     float64   `json:"load15"`
+	UptimeSecs int64     `json:"uptime_secs"`
+}
+
+// Display-time downsampling: average the samples in [from_at, to_at] into
+// fixed-width time buckets aligned to from_at, one row per non-empty bucket,
+// ascending. Gauges (CPU, memory/disk used, load) are averaged; totals and
+// cumulative counters (net bytes, uptime) take the bucket's max, i.e. the
+// latest reading. This is read-path aggregation only — the stored samples and
+// their retention are untouched.
+func (q *Queries) ListMetricSamplesBucketed(ctx context.Context, arg ListMetricSamplesBucketedParams) ([]ListMetricSamplesBucketedRow, error) {
+	rows, err := q.db.Query(ctx, listMetricSamplesBucketed, arg.Bucket, arg.FromAt, arg.ToAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMetricSamplesBucketedRow{}
+	for rows.Next() {
+		var i ListMetricSamplesBucketedRow
+		if err := rows.Scan(
+			&i.BucketAt,
+			&i.ID,
+			&i.CpuPercent,
+			&i.MemTotal,
+			&i.MemUsed,
+			&i.DiskTotal,
+			&i.DiskUsed,
+			&i.NetRx,
+			&i.NetTx,
+			&i.Load1,
+			&i.Load5,
+			&i.Load15,
+			&i.UptimeSecs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listMetricSamplesInRange = `-- name: ListMetricSamplesInRange :many

@@ -5,9 +5,18 @@
 package host
 
 import (
+	"errors"
 	"io"
 	"time"
 )
+
+// ErrNotFound is returned by the detail lookups when the process or container
+// no longer exists.
+var ErrNotFound = errors.New("not found")
+
+// ErrDockerUnavailable is returned by ContainerDetail when Docker isn't
+// running or its socket can't be reached.
+var ErrDockerUnavailable = errors.New("docker is not available")
 
 // FileInfo describes a single filesystem entry within a Managed Root.
 type FileInfo struct {
@@ -35,20 +44,77 @@ type Container struct {
 	State string `json:"state"`
 }
 
+// DiskUsage is one mounted filesystem's usage in the current snapshot.
+type DiskUsage struct {
+	Path        string  `json:"path"`   // mount point
+	Fstype      string  `json:"fstype"` // e.g. ext4, apfs, xfs
+	Total       uint64  `json:"total"`
+	Used        uint64  `json:"used"`
+	UsedPercent float64 `json:"used_percent"`
+}
+
+// ProcessDetail is the read-only drill-in view of one process. Fields the OS
+// won't reveal (e.g. another user's command line) are left empty.
+type ProcessDetail struct {
+	PID        int32     `json:"pid"`
+	PPID       int32     `json:"ppid"`
+	Name       string    `json:"name"`
+	Exe        string    `json:"exe"`
+	Cmdline    string    `json:"cmdline"`
+	User       string    `json:"user"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+	NumThreads int32     `json:"num_threads"`
+	CPU        float64   `json:"cpu"`     // percent
+	MemRSS     uint64    `json:"mem_rss"` // bytes
+	MemPerc    float64   `json:"mem_perc"`
+}
+
+// PortBinding is one published container port.
+type PortBinding struct {
+	ContainerPort string `json:"container_port"` // e.g. "5432/tcp"
+	HostIP        string `json:"host_ip"`
+	HostPort      string `json:"host_port"`
+}
+
+// Mount is one container mount (bind or volume).
+type Mount struct {
+	Type        string `json:"type"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	ReadOnly    bool   `json:"read_only"`
+}
+
+// ContainerDetail is the read-only drill-in view of one Docker container.
+type ContainerDetail struct {
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Image     string        `json:"image"`
+	State     string        `json:"state"`  // running, exited, …
+	Status    string        `json:"status"` // human string, e.g. "Up 2 hours"
+	CreatedAt time.Time     `json:"created_at"`
+	StartedAt *time.Time    `json:"started_at"`
+	Command   string        `json:"command"`
+	Ports     []PortBinding `json:"ports"`
+	Mounts    []Mount       `json:"mounts"`
+}
+
 // Vitals is a single point-in-time reading of the Host's health.
 type Vitals struct {
-	CPUPercent float64   `json:"cpu_percent"`
-	MemTotal   uint64    `json:"mem_total"`
-	MemUsed    uint64    `json:"mem_used"`
-	DiskTotal  uint64    `json:"disk_total"`
-	DiskUsed   uint64    `json:"disk_used"`
-	NetRx      uint64    `json:"net_rx"`
-	NetTx      uint64    `json:"net_tx"`
-	Load1      float64   `json:"load1"`
-	Load5      float64   `json:"load5"`
-	Load15     float64   `json:"load15"`
-	UptimeSecs uint64    `json:"uptime_secs"`
-	TopProcs   []Process `json:"top_procs"`
+	CPUPercent float64 `json:"cpu_percent"`
+	MemTotal   uint64  `json:"mem_total"`
+	MemUsed    uint64  `json:"mem_used"`
+	// DiskTotal/DiskUsed are the root filesystem, kept for the history chart.
+	DiskTotal  uint64      `json:"disk_total"`
+	DiskUsed   uint64      `json:"disk_used"`
+	Disks      []DiskUsage `json:"disks"` // per-mount, current snapshot only
+	NetRx      uint64      `json:"net_rx"`
+	NetTx      uint64      `json:"net_tx"`
+	Load1      float64     `json:"load1"`
+	Load5      float64     `json:"load5"`
+	Load15     float64     `json:"load15"`
+	UptimeSecs uint64      `json:"uptime_secs"`
+	TopProcs   []Process   `json:"top_procs"`
 }
 
 // DockerStatus reports the Docker containers, or that Docker is not enabled.
@@ -76,14 +142,22 @@ type FS interface {
 	MkdirAll(path string) error
 }
 
-// Metrics is the metrics capability: a single Sample() of the Host's vitals.
+// Metrics is the metrics capability: a single Sample() of the Host's vitals,
+// plus a read-only detail lookup for one process.
 type Metrics interface {
 	Sample() (Vitals, error)
+	// ProcessDetail returns ErrNotFound when the pid is gone.
+	ProcessDetail(pid int32) (ProcessDetail, error)
 }
 
-// Docker is the docker capability: list containers or report unavailable.
+// Docker is the docker capability: list containers or report unavailable,
+// plus a read-only detail lookup for one container. Monitoring only — there
+// is deliberately no start/stop/exec.
 type Docker interface {
 	Status() DockerStatus
+	// ContainerDetail returns ErrDockerUnavailable when Docker is off and
+	// ErrNotFound when the id is gone.
+	ContainerDetail(id string) (ContainerDetail, error)
 }
 
 // Host bundles the three capability groups into the single port.

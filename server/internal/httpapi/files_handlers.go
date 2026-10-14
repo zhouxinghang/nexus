@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"nexus/internal/db/dbgen"
 )
@@ -73,8 +74,37 @@ type resourceResponse struct {
 	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
+// toResourceResponses converts a page of Resources, loading every row's tags
+// in one query rather than one per row.
+func (s *Server) toResourceResponses(r *http.Request, rs []dbgen.Resource) ([]resourceResponse, error) {
+	out := make([]resourceResponse, 0, len(rs))
+	if len(rs) == 0 {
+		return out, nil
+	}
+	ids := make([]int64, len(rs))
+	for i, res := range rs {
+		ids[i] = res.ID
+	}
+	rows, err := s.queries.ListTagsForResources(r.Context(), ids)
+	if err != nil {
+		return nil, err
+	}
+	tags := map[int64][]string{}
+	for _, t := range rows {
+		tags[t.ResourceID] = append(tags[t.ResourceID], t.Tag)
+	}
+	for _, res := range rs {
+		out = append(out, newResourceResponse(res, tags[res.ID]))
+	}
+	return out, nil
+}
+
 func (s *Server) toResourceResponse(r *http.Request, res dbgen.Resource) resourceResponse {
 	tags, _ := s.queries.ListTagsForResource(r.Context(), res.ID)
+	return newResourceResponse(res, tags)
+}
+
+func newResourceResponse(res dbgen.Resource, tags []string) resourceResponse {
 	if tags == nil {
 		tags = []string{}
 	}
@@ -213,63 +243,85 @@ func (s *Server) handleScanRoot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.handleListResources(w, r)
+	s.writeResourcePage(w, r, pgtype.Int8{Int64: root.ID, Valid: true})
 }
 
 // --- Resources ---
 
+// Files page sizes: the default page and the hard cap on ?limit=.
+const (
+	resourcePageDefault = 200
+	resourcePageMax     = 1000
+)
+
+// handleListResources returns one offset page of Resources, ordered by path,
+// for the optional root_id / dir prefix / tag filters:
+// {"items": [...], "total": n, "limit": n, "offset": n}. Every filter, the
+// slice, and the count run in SQL.
+//
+// Offset (not keyset) is a deliberate first pass: the optional prefix + tag
+// combinations make a stable keyset cursor awkward, and offset is adequate
+// for one Host's file counts. Revisit with a (path) keyset if lists grow
+// large enough for deep offsets to hurt.
 func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-
-	var resources []dbgen.Resource
-	var err error
-
-	if tag := q.Get("tag"); tag != "" {
-		ids, idErr := s.queries.ListResourceIDsByTag(r.Context(), tag)
-		if idErr != nil {
-			writeError(w, http.StatusInternalServerError, "could not filter by tag")
-			return
-		}
-		idset := map[int64]bool{}
-		for _, id := range ids {
-			idset[id] = true
-		}
-		all, allErr := s.queries.ListResources(r.Context())
-		if allErr != nil {
-			writeError(w, http.StatusInternalServerError, "could not list resources")
-			return
-		}
-		for _, res := range all {
-			if idset[res.ID] {
-				resources = append(resources, res)
-			}
-		}
-	} else if rootStr := q.Get("root_id"); rootStr != "" {
-		rootID, convErr := strconv.ParseInt(rootStr, 10, 64)
-		if convErr != nil {
+	var rootID pgtype.Int8
+	if rootStr := q.Get("root_id"); rootStr != "" {
+		id, err := strconv.ParseInt(rootStr, 10, 64)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid root_id")
 			return
 		}
-		resources, err = s.queries.ListResourcesByRoot(r.Context(), rootID)
-	} else {
-		resources, err = s.queries.ListResources(r.Context())
+		rootID = pgtype.Int8{Int64: id, Valid: true}
 	}
+	s.writeResourcePage(w, r, rootID)
+}
+
+// writeResourcePage writes the paged resource list for the request's dir /
+// tag / limit / offset params, scoped to rootID when it is set.
+func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootID pgtype.Int8) {
+	q := r.URL.Query()
+	limit, err := parseLimit(q, resourcePageDefault, resourcePageMax)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	offset, err := parseOffset(q)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid offset")
+		return
+	}
+	var dir, tag pgtype.Text
+	if v := q.Get("dir"); v != "" {
+		dir = pgtype.Text{String: likePrefix(v), Valid: true}
+	}
+	if v := q.Get("tag"); v != "" {
+		tag = pgtype.Text{String: v, Valid: true}
+	}
+
+	total, err := s.queries.CountResources(r.Context(), dbgen.CountResourcesParams{
+		RootID: rootID, DirPattern: dir, Tag: tag,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not count resources")
+		return
+	}
+	resources, err := s.queries.ListResourcesPage(r.Context(), dbgen.ListResourcesPageParams{
+		RootID: rootID, DirPattern: dir, Tag: tag,
+		PageLimit: limit, PageOffset: offset,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list resources")
 		return
 	}
-
-	// Optional subdirectory prefix filter.
-	prefix := q.Get("dir")
-
-	out := []resourceResponse{}
-	for _, res := range resources {
-		if prefix != "" && !strings.HasPrefix(res.Path, prefix) {
-			continue
-		}
-		out = append(out, s.toResourceResponse(r, res))
+	items, err := s.toResourceResponses(r, resources)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load tags")
+		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, offsetPage[resourceResponse]{
+		Items: items, Total: total, Limit: limit, Offset: offset,
+	})
 }
 
 func (s *Server) handleGetResource(w http.ResponseWriter, r *http.Request) {
