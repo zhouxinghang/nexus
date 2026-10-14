@@ -79,7 +79,7 @@ func (s *Server) handleMoveResource(w http.ResponseWriter, r *http.Request) {
 }
 
 // doMove performs the shared rename/move: validate the target is inside a
-// Managed Root, perform the real syscall, update the Resource (tags/notes
+// Managed Root, perform the real syscall, update the Resource (tags
 // follow via the row), and record the audit entry.
 func (s *Server) doMove(w http.ResponseWriter, r *http.Request, res dbgen.Resource, newPath, action string) {
 	newPath = filepath.Clean(newPath)

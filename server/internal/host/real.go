@@ -35,13 +35,14 @@ type RealHost struct {
 	// TopN is how many processes to include in the top-process lists.
 	TopN int
 
-	// Rates (network throughput, per-process CPU) are deltas between
+	// Rates (disk/network throughput, per-process CPU) are deltas between
 	// consecutive readings, so the previous ones are kept here. mu also
 	// serialises Sample so overlapping callers don't race the baselines.
 	mu       sync.Mutex
 	last     Vitals
 	lastAt   time.Time
 	prevNet  netReading
+	prevDisk diskReading
 	prevProc procReading
 }
 
@@ -110,8 +111,20 @@ func (h *RealHost) Walk(root string) ([]FileInfo, error) {
 	return out, err
 }
 
+func (h *RealHost) ListWithinRoot(root, path string) ([]FileInfo, error) {
+	return listWithinRoot(root, path)
+}
+
 func (h *RealHost) Open(path string) (io.ReadCloser, error) {
 	return os.Open(path)
+}
+
+func (h *RealHost) OpenWithinRoot(root, path string) (io.ReadSeekCloser, FileInfo, bool, error) {
+	return openWithinRoot(root, path)
+}
+
+func (h *RealHost) WriteText(root, path string, data []byte, revision string) (FileInfo, error) {
+	return writeText(root, path, data, revision)
 }
 
 func (h *RealHost) Rename(oldPath, newPath string) error {
@@ -159,6 +172,8 @@ func (h *RealHost) Sample() (Vitals, error) {
 		v.DiskUsed = du.Used
 	}
 	v.Disks = diskUsages()
+	diskCounters, diskErr := diskIOCounters()
+	h.sampleDisk(&v, time.Now(), diskCounters, diskErr)
 	if counters, err := gopsnet.IOCounters(true); err == nil {
 		cur := netReading{at: now, nics: countedNICs(counters, loopbackNICs())}
 		for _, c := range cur.nics {

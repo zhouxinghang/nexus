@@ -109,7 +109,7 @@ func TestDeletePermanent(t *testing.T) {
 	}
 }
 
-func TestTagsAndNotesFollowRenameAndMove(t *testing.T) {
+func TestTagsFollowRenameAndMove(t *testing.T) {
 	h := newHarness(t)
 	dir := t.TempDir()
 	f := filepath.Join(dir, "orig.txt")
@@ -119,15 +119,14 @@ func TestTagsAndNotesFollowRenameAndMove(t *testing.T) {
 	id := resources[0].ID
 
 	h.do(http.MethodPost, path("/api/files/resources/", id)+"/tags", map[string]string{"tag": "keep"}).Body.Close()
-	h.do(http.MethodPut, path("/api/files/resources/", id)+"/note", map[string]string{"note": "sticky"}).Body.Close()
 
 	// Rename.
 	rr := h.do(http.MethodPost, path("/api/files/resources/", id)+"/rename", map[string]string{"name": "renamed.txt"})
 	mustStatus(t, rr, http.StatusOK)
 	var afterRename resourceResp
 	decode(t, rr, &afterRename)
-	if afterRename.Note != "sticky" || len(afterRename.Tags) != 1 || afterRename.Tags[0] != "keep" {
-		t.Errorf("tags/notes lost on rename: %+v", afterRename)
+	if len(afterRename.Tags) != 1 || afterRename.Tags[0] != "keep" {
+		t.Errorf("tags lost on rename: %+v", afterRename)
 	}
 
 	// Move into a subdir.
@@ -138,8 +137,8 @@ func TestTagsAndNotesFollowRenameAndMove(t *testing.T) {
 	mustStatus(t, mr, http.StatusOK)
 	var afterMove resourceResp
 	decode(t, mr, &afterMove)
-	if afterMove.Note != "sticky" || len(afterMove.Tags) != 1 || afterMove.Tags[0] != "keep" {
-		t.Errorf("tags/notes lost on move: %+v", afterMove)
+	if len(afterMove.Tags) != 1 || afterMove.Tags[0] != "keep" {
+		t.Errorf("tags lost on move: %+v", afterMove)
 	}
 }
 

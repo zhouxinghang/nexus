@@ -18,38 +18,42 @@ INSERT INTO metric_samples (
     net_rx, net_tx, load1, load5, load15, uptime_secs, top_procs, containers,
     cpu_cores, net_rx_rate, net_tx_rate, net_rx_pps, net_tx_pps,
     psi_cpu_some, psi_mem_some, psi_mem_full, psi_io_some, psi_io_full,
-    self_cpu, self_rss
+    self_cpu, self_rss, disk_read_rate, disk_write_rate, disk_read_iops, disk_write_iops
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-          $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
-RETURNING id, taken_at, cpu_percent, mem_total, mem_used, disk_total, disk_used, net_rx, net_tx, load1, load5, load15, uptime_secs, top_procs, containers, cpu_cores, net_rx_rate, net_tx_rate, net_rx_pps, net_tx_pps, psi_cpu_some, psi_mem_some, psi_mem_full, psi_io_some, psi_io_full, self_cpu, self_rss
+          $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+RETURNING id, taken_at, cpu_percent, mem_total, mem_used, disk_total, disk_used, net_rx, net_tx, load1, load5, load15, uptime_secs, top_procs, containers, cpu_cores, net_rx_rate, net_tx_rate, net_rx_pps, net_tx_pps, psi_cpu_some, psi_mem_some, psi_mem_full, psi_io_some, psi_io_full, self_cpu, self_rss, disk_read_rate, disk_write_rate, disk_read_iops, disk_write_iops
 `
 
 type InsertMetricSampleParams struct {
-	CpuPercent float64       `json:"cpu_percent"`
-	MemTotal   int64         `json:"mem_total"`
-	MemUsed    int64         `json:"mem_used"`
-	DiskTotal  int64         `json:"disk_total"`
-	DiskUsed   int64         `json:"disk_used"`
-	NetRx      int64         `json:"net_rx"`
-	NetTx      int64         `json:"net_tx"`
-	Load1      float64       `json:"load1"`
-	Load5      float64       `json:"load5"`
-	Load15     float64       `json:"load15"`
-	UptimeSecs int64         `json:"uptime_secs"`
-	TopProcs   []byte        `json:"top_procs"`
-	Containers []byte        `json:"containers"`
-	CpuCores   pgtype.Int4   `json:"cpu_cores"`
-	NetRxRate  pgtype.Float8 `json:"net_rx_rate"`
-	NetTxRate  pgtype.Float8 `json:"net_tx_rate"`
-	NetRxPps   pgtype.Float8 `json:"net_rx_pps"`
-	NetTxPps   pgtype.Float8 `json:"net_tx_pps"`
-	PsiCpuSome pgtype.Float8 `json:"psi_cpu_some"`
-	PsiMemSome pgtype.Float8 `json:"psi_mem_some"`
-	PsiMemFull pgtype.Float8 `json:"psi_mem_full"`
-	PsiIoSome  pgtype.Float8 `json:"psi_io_some"`
-	PsiIoFull  pgtype.Float8 `json:"psi_io_full"`
-	SelfCpu    pgtype.Float8 `json:"self_cpu"`
-	SelfRss    pgtype.Int8   `json:"self_rss"`
+	CpuPercent    float64       `json:"cpu_percent"`
+	MemTotal      int64         `json:"mem_total"`
+	MemUsed       int64         `json:"mem_used"`
+	DiskTotal     int64         `json:"disk_total"`
+	DiskUsed      int64         `json:"disk_used"`
+	NetRx         int64         `json:"net_rx"`
+	NetTx         int64         `json:"net_tx"`
+	Load1         float64       `json:"load1"`
+	Load5         float64       `json:"load5"`
+	Load15        float64       `json:"load15"`
+	UptimeSecs    int64         `json:"uptime_secs"`
+	TopProcs      []byte        `json:"top_procs"`
+	Containers    []byte        `json:"containers"`
+	CpuCores      pgtype.Int4   `json:"cpu_cores"`
+	NetRxRate     pgtype.Float8 `json:"net_rx_rate"`
+	NetTxRate     pgtype.Float8 `json:"net_tx_rate"`
+	NetRxPps      pgtype.Float8 `json:"net_rx_pps"`
+	NetTxPps      pgtype.Float8 `json:"net_tx_pps"`
+	PsiCpuSome    pgtype.Float8 `json:"psi_cpu_some"`
+	PsiMemSome    pgtype.Float8 `json:"psi_mem_some"`
+	PsiMemFull    pgtype.Float8 `json:"psi_mem_full"`
+	PsiIoSome     pgtype.Float8 `json:"psi_io_some"`
+	PsiIoFull     pgtype.Float8 `json:"psi_io_full"`
+	SelfCpu       pgtype.Float8 `json:"self_cpu"`
+	SelfRss       pgtype.Int8   `json:"self_rss"`
+	DiskReadRate  pgtype.Float8 `json:"disk_read_rate"`
+	DiskWriteRate pgtype.Float8 `json:"disk_write_rate"`
+	DiskReadIops  pgtype.Float8 `json:"disk_read_iops"`
+	DiskWriteIops pgtype.Float8 `json:"disk_write_iops"`
 }
 
 func (q *Queries) InsertMetricSample(ctx context.Context, arg InsertMetricSampleParams) (MetricSample, error) {
@@ -79,6 +83,10 @@ func (q *Queries) InsertMetricSample(ctx context.Context, arg InsertMetricSample
 		arg.PsiIoFull,
 		arg.SelfCpu,
 		arg.SelfRss,
+		arg.DiskReadRate,
+		arg.DiskWriteRate,
+		arg.DiskReadIops,
+		arg.DiskWriteIops,
 	)
 	var i MetricSample
 	err := row.Scan(
@@ -109,6 +117,10 @@ func (q *Queries) InsertMetricSample(ctx context.Context, arg InsertMetricSample
 		&i.PsiIoFull,
 		&i.SelfCpu,
 		&i.SelfRss,
+		&i.DiskReadRate,
+		&i.DiskWriteRate,
+		&i.DiskReadIops,
+		&i.DiskWriteIops,
 	)
 	return i, err
 }
@@ -136,6 +148,11 @@ SELECT
     coalesce(avg(net_tx_rate), 0)::double precision  AS net_tx_rate,
     coalesce(avg(net_rx_pps), 0)::double precision   AS net_rx_pps,
     coalesce(avg(net_tx_pps), 0)::double precision   AS net_tx_pps,
+    count(disk_read_rate)::bigint                      AS disk_rate_n,
+    coalesce(avg(disk_read_rate), 0)::double precision  AS disk_read_rate,
+    coalesce(avg(disk_write_rate), 0)::double precision AS disk_write_rate,
+    coalesce(avg(disk_read_iops), 0)::double precision  AS disk_read_iops,
+    coalesce(avg(disk_write_iops), 0)::double precision AS disk_write_iops,
     count(psi_cpu_some)::bigint                      AS psi_n,
     coalesce(avg(psi_cpu_some), 0)::double precision AS psi_cpu_some,
     coalesce(avg(psi_mem_some), 0)::double precision AS psi_mem_some,
@@ -158,40 +175,45 @@ type ListMetricSamplesBucketedParams struct {
 }
 
 type ListMetricSamplesBucketedRow struct {
-	BucketAt   time.Time `json:"bucket_at"`
-	ID         int64     `json:"id"`
-	CpuPercent float64   `json:"cpu_percent"`
-	MemTotal   int64     `json:"mem_total"`
-	MemUsed    int64     `json:"mem_used"`
-	DiskTotal  int64     `json:"disk_total"`
-	DiskUsed   int64     `json:"disk_used"`
-	NetRx      int64     `json:"net_rx"`
-	NetTx      int64     `json:"net_tx"`
-	Load1      float64   `json:"load1"`
-	Load5      float64   `json:"load5"`
-	Load15     float64   `json:"load15"`
-	UptimeSecs int64     `json:"uptime_secs"`
-	CpuCores   int32     `json:"cpu_cores"`
-	NetRateN   int64     `json:"net_rate_n"`
-	NetRxRate  float64   `json:"net_rx_rate"`
-	NetTxRate  float64   `json:"net_tx_rate"`
-	NetRxPps   float64   `json:"net_rx_pps"`
-	NetTxPps   float64   `json:"net_tx_pps"`
-	PsiN       int64     `json:"psi_n"`
-	PsiCpuSome float64   `json:"psi_cpu_some"`
-	PsiMemSome float64   `json:"psi_mem_some"`
-	PsiMemFull float64   `json:"psi_mem_full"`
-	PsiIoSome  float64   `json:"psi_io_some"`
-	PsiIoFull  float64   `json:"psi_io_full"`
-	SelfN      int64     `json:"self_n"`
-	SelfCpu    float64   `json:"self_cpu"`
-	SelfRss    int64     `json:"self_rss"`
+	BucketAt      time.Time `json:"bucket_at"`
+	ID            int64     `json:"id"`
+	CpuPercent    float64   `json:"cpu_percent"`
+	MemTotal      int64     `json:"mem_total"`
+	MemUsed       int64     `json:"mem_used"`
+	DiskTotal     int64     `json:"disk_total"`
+	DiskUsed      int64     `json:"disk_used"`
+	NetRx         int64     `json:"net_rx"`
+	NetTx         int64     `json:"net_tx"`
+	Load1         float64   `json:"load1"`
+	Load5         float64   `json:"load5"`
+	Load15        float64   `json:"load15"`
+	UptimeSecs    int64     `json:"uptime_secs"`
+	CpuCores      int32     `json:"cpu_cores"`
+	NetRateN      int64     `json:"net_rate_n"`
+	NetRxRate     float64   `json:"net_rx_rate"`
+	NetTxRate     float64   `json:"net_tx_rate"`
+	NetRxPps      float64   `json:"net_rx_pps"`
+	NetTxPps      float64   `json:"net_tx_pps"`
+	DiskRateN     int64     `json:"disk_rate_n"`
+	DiskReadRate  float64   `json:"disk_read_rate"`
+	DiskWriteRate float64   `json:"disk_write_rate"`
+	DiskReadIops  float64   `json:"disk_read_iops"`
+	DiskWriteIops float64   `json:"disk_write_iops"`
+	PsiN          int64     `json:"psi_n"`
+	PsiCpuSome    float64   `json:"psi_cpu_some"`
+	PsiMemSome    float64   `json:"psi_mem_some"`
+	PsiMemFull    float64   `json:"psi_mem_full"`
+	PsiIoSome     float64   `json:"psi_io_some"`
+	PsiIoFull     float64   `json:"psi_io_full"`
+	SelfN         int64     `json:"self_n"`
+	SelfCpu       float64   `json:"self_cpu"`
+	SelfRss       int64     `json:"self_rss"`
 }
 
 // Display-time downsampling: average the samples in [from_at, to_at] into
 // fixed-width time buckets aligned to from_at, one row per non-empty bucket,
 // ascending. Gauges (CPU, memory/disk used, load, network rates, pressure,
-// Nexus's own usage) are averaged; totals and cumulative counters (net bytes,
+// disk I/O, Nexus's own usage) are averaged; totals and cumulative counters (net bytes,
 // uptime, cores) take the bucket's max, i.e. the latest reading. This is
 // read-path aggregation only — the stored samples and their retention are
 // untouched.
@@ -224,6 +246,11 @@ func (q *Queries) ListMetricSamplesBucketed(ctx context.Context, arg ListMetricS
 			&i.NetTxRate,
 			&i.NetRxPps,
 			&i.NetTxPps,
+			&i.DiskRateN,
+			&i.DiskReadRate,
+			&i.DiskWriteRate,
+			&i.DiskReadIops,
+			&i.DiskWriteIops,
 			&i.PsiN,
 			&i.PsiCpuSome,
 			&i.PsiMemSome,
@@ -245,7 +272,7 @@ func (q *Queries) ListMetricSamplesBucketed(ctx context.Context, arg ListMetricS
 }
 
 const listMetricSamplesInRange = `-- name: ListMetricSamplesInRange :many
-SELECT id, taken_at, cpu_percent, mem_total, mem_used, disk_total, disk_used, net_rx, net_tx, load1, load5, load15, uptime_secs, top_procs, containers, cpu_cores, net_rx_rate, net_tx_rate, net_rx_pps, net_tx_pps, psi_cpu_some, psi_mem_some, psi_mem_full, psi_io_some, psi_io_full, self_cpu, self_rss FROM metric_samples
+SELECT id, taken_at, cpu_percent, mem_total, mem_used, disk_total, disk_used, net_rx, net_tx, load1, load5, load15, uptime_secs, top_procs, containers, cpu_cores, net_rx_rate, net_tx_rate, net_rx_pps, net_tx_pps, psi_cpu_some, psi_mem_some, psi_mem_full, psi_io_some, psi_io_full, self_cpu, self_rss, disk_read_rate, disk_write_rate, disk_read_iops, disk_write_iops FROM metric_samples
 WHERE taken_at >= $1 AND taken_at <= $2
 ORDER BY taken_at ASC, id ASC
 `
@@ -292,6 +319,10 @@ func (q *Queries) ListMetricSamplesInRange(ctx context.Context, arg ListMetricSa
 			&i.PsiIoFull,
 			&i.SelfCpu,
 			&i.SelfRss,
+			&i.DiskReadRate,
+			&i.DiskWriteRate,
+			&i.DiskReadIops,
+			&i.DiskWriteIops,
 		); err != nil {
 			return nil, err
 		}

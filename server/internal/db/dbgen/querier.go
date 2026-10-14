@@ -28,7 +28,7 @@ type Querier interface {
 	BulkUpsertResources(ctx context.Context, arg BulkUpsertResourcesParams) error
 	// The total for the same filter set as ListResourcesPage.
 	CountResources(ctx context.Context, arg CountResourcesParams) (int64, error)
-	// Per-kind totals for the root / directory-prefix / tag filters, deliberately
+	// Per-kind totals for the root / directory-prefix / name / tag filters, deliberately
 	// ignoring the kind filter itself so the UI's type chips always show how many
 	// Resources of each kind are reachable within the other active filters.
 	CountResourcesByKind(ctx context.Context, arg CountResourcesByKindParams) ([]CountResourcesByKindRow, error)
@@ -76,7 +76,7 @@ type Querier interface {
 	// Display-time downsampling: average the samples in [from_at, to_at] into
 	// fixed-width time buckets aligned to from_at, one row per non-empty bucket,
 	// ascending. Gauges (CPU, memory/disk used, load, network rates, pressure,
-	// Nexus's own usage) are averaged; totals and cumulative counters (net bytes,
+	// disk I/O, Nexus's own usage) are averaged; totals and cumulative counters (net bytes,
 	// uptime, cores) take the bucket's max, i.e. the latest reading. This is
 	// read-path aggregation only — the stored samples and their retention are
 	// untouched.
@@ -86,12 +86,18 @@ type Querier interface {
 	// once, then skips re-upserting any file whose size and modified_at are
 	// unchanged — the modtime-based "quick scan" that makes rescans cheap.
 	ListResourceDigestByRoot(ctx context.Context, rootID int64) ([]ListResourceDigestByRootRow, error)
+	// Immediate ancestor directories from the index keep Missing Resources
+	// reachable even after their parent directories disappear from disk.
+	ListResourceDirectories(ctx context.Context, arg ListResourceDirectoriesParams) ([]string, error)
 	ListResourceIDsByRoot(ctx context.Context, rootID int64) ([]ListResourceIDsByRootRow, error)
 	ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resource, error)
-	// One page of Resources under the optional root / directory-prefix / tag /
-	// kind filters, ordered by path. The prefix is an already-escaped LIKE pattern
+	// One page of Resources under optional root / directory-prefix / name / tag /
+	// kind filters. child_pattern excludes deeper descendants when browsing one
+	// directory. Sorting happens before pagination, with path as a stable tie-break.
+	// The prefix is an already-escaped LIKE pattern
 	// (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL; kind
 	// matches the generated resource.kind column.
+	// Zero is reserved for the complete, direct-child folder view.
 	ListResourcesPage(ctx context.Context, arg ListResourcesPageParams) ([]Resource, error)
 	ListSubtasksForTasks(ctx context.Context, taskIds []int64) ([]Subtask, error)
 	ListTagsForResource(ctx context.Context, resourceID int64) ([]string, error)
@@ -137,7 +143,6 @@ type Querier interface {
 	UnarchiveTask(ctx context.Context, id int64) (Task, error)
 	UpdateBookmark(ctx context.Context, arg UpdateBookmarkParams) (Bookmark, error)
 	UpdateLabel(ctx context.Context, arg UpdateLabelParams) (Label, error)
-	UpdateResourceNote(ctx context.Context, arg UpdateResourceNoteParams) (Resource, error)
 	UpdateResourcePath(ctx context.Context, arg UpdateResourcePathParams) (Resource, error)
 	UpdateSubtask(ctx context.Context, arg UpdateSubtaskParams) (Subtask, error)
 	UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error)

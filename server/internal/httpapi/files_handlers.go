@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,9 +29,12 @@ func (s *Server) registerFileRoutes(r chi.Router) {
 	r.Post("/files/resources/register", s.handleRegisterResource)
 	r.Delete("/files/resources/{id}", s.handleClearResource)
 	r.Get("/files/resources/{id}/download", s.handleDownloadResource)
+	r.Get("/files/resources/{id}/preview", s.handleResourcePreview)
+	r.Get("/files/resources/{id}/content", s.handleResourceContent)
+	r.Head("/files/resources/{id}/content", s.handleResourceContent)
+	r.Put("/files/resources/{id}/content", s.handleSaveResourceContent)
 
 	// Metadata
-	r.Put("/files/resources/{id}/note", s.handleSetNote)
 	r.Post("/files/resources/{id}/tags", s.handleAddTag)
 	r.Delete("/files/resources/{id}/tags/{tag}", s.handleRemoveTag)
 
@@ -57,7 +61,8 @@ func (s *Server) registerFileRoutes(r chi.Router) {
 // the whole result set rather than only the loaded rows.
 type resourcePage struct {
 	offsetPage[resourceResponse]
-	Kinds map[string]int64 `json:"kinds"`
+	Kinds       map[string]int64    `json:"kinds"`
+	Directories []directoryResponse `json:"directories"`
 }
 
 type rootResponse struct {
@@ -76,7 +81,6 @@ type resourceResponse struct {
 	ModifiedAt *time.Time `json:"modified_at"`
 	State      string     `json:"state"`
 	Kind       string     `json:"kind"`
-	Note       string     `json:"note"`
 	Tags       []string   `json:"tags"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
@@ -126,7 +130,6 @@ func newResourceResponse(res dbgen.Resource, tags []string) resourceResponse {
 		ModifiedAt: res.ModifiedAt,
 		State:      string(res.State),
 		Kind:       res.Kind,
-		Note:       res.Note,
 		Tags:       tags,
 		CreatedAt:  res.CreatedAt,
 		UpdatedAt:  res.UpdatedAt,
@@ -207,10 +210,9 @@ const (
 	resourcePageMax     = 1000
 )
 
-// handleListResources returns one offset page of Resources, ordered by path,
-// for the optional root_id / dir prefix / tag / kind filters:
-// {"items": [...], "total": n, "limit": n, "offset": n, "kinds": {...}}. Every
-// filter, the slice, the count, and the per-kind counts run in SQL.
+// handleListResources returns an offset page, or the complete direct children
+// in folder mode. root_id / dir / parent / tag / kind / name filters, sorting
+// and counts run in SQL. parent adds confined navigation directories.
 //
 // Offset (not keyset) is a deliberate first pass: the optional prefix + tag
 // combinations make a stable keyset cursor awkward, and offset is adequate
@@ -230,12 +232,33 @@ func (s *Server) handleListResources(w http.ResponseWriter, r *http.Request) {
 	s.writeResourcePage(w, r, rootID)
 }
 
-// writeResourcePage writes the paged resource list for the request's dir /
-// tag / kind / limit / offset params, scoped to rootID when it is set. The
-// envelope carries per-kind counts (for the other active filters) so the UI's
-// type chips reflect the full result set, not just the loaded page.
+// writeResourcePage writes the mode-specific list, scoped to rootID when set.
+// Kind counts respect the other filters and reflect all results, not one page.
 func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootID pgtype.Int8) {
 	q := r.URL.Query()
+	mode := q.Get("mode")
+	if mode != "" && mode != "folder" && mode != "type" {
+		writeError(w, http.StatusBadRequest, "invalid browsing mode")
+		return
+	}
+	if mode == "type" && q.Has("parent") {
+		writeError(w, http.StatusBadRequest, "type mode uses dir, not parent")
+		return
+	}
+	// The unpaged view is deliberately restricted to one validated directory.
+	// Recursive/type queries retain the normal page cap, even for huge roots.
+	if mode == "folder" {
+		if !rootID.Valid || q.Get("parent") == "" {
+			writeError(w, http.StatusBadRequest, "folder mode requires root_id and parent")
+			return
+		}
+		for _, key := range []string{"limit", "offset", "dir", "tag", "kind", "name"} {
+			if q.Has(key) {
+				writeError(w, http.StatusBadRequest, "folder mode does not support "+key)
+				return
+			}
+		}
+	}
 	limit, err := parseLimit(q, resourcePageDefault, resourcePageMax)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid limit")
@@ -246,12 +269,75 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 		writeError(w, http.StatusBadRequest, "invalid offset")
 		return
 	}
-	var dir, tag, kind pgtype.Text
+	if mode == "folder" {
+		limit = 0 // SQL NULLIF turns this into LIMIT ALL.
+		offset = 0
+	}
+	sortBy, sortOrder := q.Get("sort"), q.Get("order")
+	if sortBy == "" {
+		sortBy = "path" // Preserve the existing recursive API's default.
+	}
+	if sortBy != "path" && sortBy != "name" && sortBy != "size" && sortBy != "modified" {
+		writeError(w, http.StatusBadRequest, "invalid sort")
+		return
+	}
+	if sortOrder == "" {
+		sortOrder = "asc"
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		writeError(w, http.StatusBadRequest, "invalid order")
+		return
+	}
+	if sortBy == "path" && sortOrder != "asc" {
+		writeError(w, http.StatusBadRequest, "path sort only supports asc")
+		return
+	}
+	var dir, child, tag, kind, name pgtype.Text
 	if v := q.Get("dir"); v != "" {
+		if mode == "type" {
+			// Match a directory boundary, not similarly named siblings.
+			if !filepath.IsAbs(v) {
+				writeError(w, http.StatusBadRequest, "directory filter must be absolute")
+				return
+			}
+			v = strings.TrimRight(filepath.Clean(v), string(filepath.Separator)) + string(filepath.Separator)
+		}
 		dir = pgtype.Text{String: likePrefix(v), Valid: true}
+	}
+	directories := []directoryResponse{}
+	if parent := q.Get("parent"); parent != "" {
+		if q.Get("dir") != "" {
+			writeError(w, http.StatusBadRequest, "parent and dir cannot be combined")
+			return
+		}
+		if !rootID.Valid {
+			writeError(w, http.StatusBadRequest, "parent requires root_id")
+			return
+		}
+		root, err := s.queries.GetManagedRoot(r.Context(), rootID.Int64)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "root not found")
+			return
+		}
+		parent = filepath.Clean(parent)
+		if !filepath.IsAbs(parent) || !pathInRoot(parent, root.Path) {
+			writeError(w, http.StatusBadRequest, "parent is not inside the Managed Root")
+			return
+		}
+		directories, err = s.resourceDirectories(r, root, parent, sortBy, sortOrder)
+		if err != nil {
+			writeDirectoryError(w, err)
+			return
+		}
+		prefix := strings.TrimRight(parent, string(filepath.Separator)) + string(filepath.Separator)
+		dir = pgtype.Text{String: likePrefix(prefix), Valid: true}
+		child = pgtype.Text{String: likePrefix(prefix) + "/%", Valid: true}
 	}
 	if v := q.Get("tag"); v != "" {
 		tag = pgtype.Text{String: v, Valid: true}
+	}
+	if v := strings.TrimSpace(q.Get("name")); v != "" {
+		name = pgtype.Text{String: "%" + likePrefix(v), Valid: true}
 	}
 	if v := q.Get("kind"); v != "" {
 		if !validKind(v) {
@@ -262,7 +348,7 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 	}
 
 	total, err := s.queries.CountResources(r.Context(), dbgen.CountResourcesParams{
-		RootID: rootID, DirPattern: dir, Tag: tag, Kind: kind,
+		RootID: rootID, DirPattern: dir, ChildPattern: child, NamePattern: name, Tag: tag, Kind: kind,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not count resources")
@@ -271,7 +357,7 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 	// Per-kind counts ignore the kind filter so every chip stays visible and
 	// clickable while one kind is selected.
 	kindRows, err := s.queries.CountResourcesByKind(r.Context(), dbgen.CountResourcesByKindParams{
-		RootID: rootID, DirPattern: dir, Tag: tag,
+		RootID: rootID, DirPattern: dir, ChildPattern: child, NamePattern: name, Tag: tag,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not count resources by kind")
@@ -282,7 +368,8 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 		kinds[kr.Kind] = kr.Count
 	}
 	resources, err := s.queries.ListResourcesPage(r.Context(), dbgen.ListResourcesPageParams{
-		RootID: rootID, DirPattern: dir, Tag: tag, Kind: kind,
+		RootID: rootID, DirPattern: dir, ChildPattern: child, NamePattern: name, Tag: tag, Kind: kind,
+		SortBy: sortBy, SortOrder: sortOrder,
 		PageLimit: limit, PageOffset: offset,
 	})
 	if err != nil {
@@ -298,7 +385,8 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 		offsetPage: offsetPage[resourceResponse]{
 			Items: items, Total: total, Limit: limit, Offset: offset,
 		},
-		Kinds: kinds,
+		Kinds:       kinds,
+		Directories: directories,
 	})
 }
 
@@ -392,51 +480,19 @@ func (s *Server) handleClearResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDownloadResource(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	res, err := s.queries.GetResource(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "resource not found")
-		return
-	}
-	rc, err := s.host.Open(res.Path)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "underlying file not available")
+	res, _, rc, _, _ := s.openResourceContent(w, r)
+	if rc == nil {
 		return
 	}
 	defer rc.Close()
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+res.Name+"\"")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": res.Name}))
 	_, _ = copyTo(w, rc)
 }
 
 // --- Metadata ---
-
-type noteRequest struct {
-	Note string `json:"note"`
-}
-
-func (s *Server) handleSetNote(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	var req noteRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	res, err := s.queries.UpdateResourceNote(r.Context(), dbgen.UpdateResourceNoteParams{ID: id, Note: req.Note})
-	if err != nil {
-		writeError(w, http.StatusNotFound, "resource not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, s.toResourceResponse(r, res))
-}
 
 type tagRequest struct {
 	Tag string `json:"tag"`

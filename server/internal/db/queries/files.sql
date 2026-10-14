@@ -80,41 +80,68 @@ ORDER BY path ASC;
 SELECT * FROM resources WHERE path = $1;
 
 -- name: ListResourcesPage :many
--- One page of Resources under the optional root / directory-prefix / tag /
--- kind filters, ordered by path. The prefix is an already-escaped LIKE pattern
+-- One page of Resources under optional root / directory-prefix / name / tag /
+-- kind filters. child_pattern excludes deeper descendants when browsing one
+-- directory. Sorting happens before pagination, with path as a stable tie-break.
+-- The prefix is an already-escaped LIKE pattern
 -- (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL; kind
 -- matches the generated resource.kind column.
 SELECT * FROM resources r
 WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
   AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(child_pattern)::text IS NULL OR r.path NOT LIKE sqlc.narg(child_pattern)::text)
+  AND (sqlc.narg(name_pattern)::text IS NULL OR r.name ILIKE sqlc.narg(name_pattern)::text)
   AND (sqlc.narg(kind)::text IS NULL OR r.kind = sqlc.narg(kind)::text)
   AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
         WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text))
-ORDER BY r.path ASC
-LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+ORDER BY r.is_dir DESC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'name' AND sqlc.arg(sort_order)::text = 'asc' THEN lower(r.name) END ASC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'name' AND sqlc.arg(sort_order)::text = 'desc' THEN lower(r.name) END DESC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'size' AND sqlc.arg(sort_order)::text = 'asc' THEN r.size END ASC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'size' AND sqlc.arg(sort_order)::text = 'desc' THEN r.size END DESC,
+  CASE WHEN sqlc.arg(sort_by)::text = 'modified' AND sqlc.arg(sort_order)::text = 'asc' THEN r.modified_at END ASC NULLS LAST,
+  CASE WHEN sqlc.arg(sort_by)::text = 'modified' AND sqlc.arg(sort_order)::text = 'desc' THEN r.modified_at END DESC NULLS LAST,
+  r.path ASC
+-- Zero is reserved for the complete, direct-child folder view.
+LIMIT NULLIF(sqlc.arg(page_limit)::int, 0) OFFSET sqlc.arg(page_offset);
 
 -- name: CountResources :one
 -- The total for the same filter set as ListResourcesPage.
 SELECT count(*) FROM resources r
 WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
   AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(child_pattern)::text IS NULL OR r.path NOT LIKE sqlc.narg(child_pattern)::text)
+  AND (sqlc.narg(name_pattern)::text IS NULL OR r.name ILIKE sqlc.narg(name_pattern)::text)
   AND (sqlc.narg(kind)::text IS NULL OR r.kind = sqlc.narg(kind)::text)
   AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
         WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text));
 
 -- name: CountResourcesByKind :many
--- Per-kind totals for the root / directory-prefix / tag filters, deliberately
+-- Per-kind totals for the root / directory-prefix / name / tag filters, deliberately
 -- ignoring the kind filter itself so the UI's type chips always show how many
 -- Resources of each kind are reachable within the other active filters.
 SELECT r.kind, count(*) AS count FROM resources r
 WHERE (sqlc.narg(root_id)::bigint IS NULL OR r.root_id = sqlc.narg(root_id)::bigint)
   AND (sqlc.narg(dir_pattern)::text IS NULL OR r.path LIKE sqlc.narg(dir_pattern)::text)
+  AND (sqlc.narg(child_pattern)::text IS NULL OR r.path NOT LIKE sqlc.narg(child_pattern)::text)
+  AND (sqlc.narg(name_pattern)::text IS NULL OR r.name ILIKE sqlc.narg(name_pattern)::text)
   AND (sqlc.narg(tag)::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
         WHERE rt.resource_id = r.id AND rt.tag = sqlc.narg(tag)::text))
 GROUP BY r.kind;
+
+-- name: ListResourceDirectories :many
+-- Immediate ancestor directories from the index keep Missing Resources
+-- reachable even after their parent directories disappear from disk.
+SELECT DISTINCT (sqlc.arg(parent_prefix)::text ||
+  split_part(substring(r.path FROM length(sqlc.arg(parent_prefix)::text) + 1), '/', 1))::text AS path
+FROM resources r
+WHERE r.root_id = sqlc.arg(root_id)::bigint
+  AND r.path LIKE sqlc.arg(dir_pattern)::text
+  AND strpos(substring(r.path FROM length(sqlc.arg(parent_prefix)::text) + 1), '/') > 0
+ORDER BY path ASC;
 
 -- name: ResourceSummary :one
 SELECT count(*)                                   AS total,
@@ -135,12 +162,6 @@ DELETE FROM resources WHERE id = $1;
 
 -- name: DeleteResourcesByIDs :exec
 DELETE FROM resources WHERE id = ANY(sqlc.arg(ids)::bigint[]);
-
--- name: UpdateResourceNote :one
-UPDATE resources
-SET note = $2, updated_at = now()
-WHERE id = $1
-RETURNING *;
 
 -- name: UpdateResourcePath :one
 UPDATE resources

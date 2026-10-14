@@ -76,6 +76,66 @@ bcrypt.GenerateFromPassword([]byte("your-password"), bcrypt.DefaultCost)
 cd web && npm run dev   # proxies /api to http://localhost:8080
 ```
 
+## Host disk I/O statistics
+
+Servers' **Disk I/O** card shows Host-wide read/write throughput (KB/s, MB/s)
+and operations per second (IOPS). The disk history chart plots separate Read and
+Write curves; its data table is also keyboard-accessible. Filesystem space
+usage remains in **Filesystems**.
+
+Rates come from per-device counter differences over the sampling interval,
+not Nexus file operations or cumulative byte totals. On Linux, whole leaf
+storage devices are counted once, excluding partitions, stacked storage
+layers and memory/loop-backed devices.
+
+Migration 18 adds nullable disk throughput and IOPS fields to Metric Samples.
+Older samples and unavailable observations remain gaps, while measured idle
+storage displays zero. The first observation establishes a baseline.
+
+## Files directory browsing and metadata
+
+Files has two distinct browsing modes:
+
+- **Folders**: browse one Managed Root directory at a time, with the complete
+  direct-child list and no pagination. Single-click selects; double-click or
+  Enter opens a folder. Breadcrumbs, browser back/forward and Ctrl/Cmd+Up return
+  through the hierarchy, including empty and Missing directories.
+- **By type**: browse indexed Resources recursively, grouped by type on each
+  server page (200 Resources). Combine type, Managed Root, folder-subtree, exact
+  tag and case-insensitive name-substring filters. Previous/Next fetch just one
+  page; the URL preserves filters, sorting and page position.
+
+Use **Manage roots** to add/remove Managed Roots and start a Scan. Root management,
+advanced filters and batch forms are disclosed only when needed. Single-click
+selects without opening a detail panel; use the **File details** icon to manage
+tags, rename, move or delete. Ctrl/Cmd-click and Shift-click support multi/range
+selection. Double-click, Enter or Space previews a present Resource.
+
+The **Name**, **Size** and **Modified** headers sort in either direction. Sorting
+and filtering happen on the server before type-view pagination; folders remain
+above Resources in folder mode. Scan indexes new files; Missing Resources keep
+their tags and remain reachable until cleared.
+
+Resource metadata is tags-only. Migration 17 permanently removes existing note
+text; it does not change tags or Host files.
+
+## Resource preview and text editing
+
+In Files, double-click a Resource (or press Enter on its row) to preview it.
+Images support zoom, audio/video use browser playback, and PDFs use the
+browser's PDF viewer. Unsupported formats remain downloadable.
+
+UTF-8 text up to 2 MiB opens as read-only source. Choose **Edit** for syntax
+highlighting, search/replace, undo/redo and **Ctrl/Cmd+S** to save directly to the
+Host. BOM and consistent line endings are preserved. HTML, Markdown and SVG
+remain source, rather than rendered documents. Office editing and transcoding
+are not included.
+
+Unsaved edits prompt before closing/reloading/changing files. A disk-version
+conflict keeps your draft and offers a draft download; reload before saving.
+Writes are confined to the Managed Root, atomic, permission-preserving and
+audited. Symlinks and files without write permission are read-only.
+
 ## Regenerate sqlc code
 
 ```sh
@@ -90,4 +150,12 @@ with `NEXUS_TEST_DATABASE_URL`.
 
 ```sh
 cd server && go test ./...
+```
+
+Browser interaction tests (mock API, no running backend required):
+
+```sh
+cd web
+npx playwright install chromium   # once, if Chromium is not installed
+npm test
 ```

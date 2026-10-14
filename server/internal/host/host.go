@@ -108,6 +108,15 @@ type NetRate struct {
 	TxPackets float64 `json:"tx_packets_per_sec"`
 }
 
+// DiskRate is whole-device Host storage throughput over the sampling window,
+// not filesystem capacity or Nexus-only file activity. Operations are IOPS.
+type DiskRate struct {
+	ReadBytes  float64 `json:"read_bytes_per_sec"`
+	WriteBytes float64 `json:"write_bytes_per_sec"`
+	ReadOps    float64 `json:"read_ops_per_sec"`
+	WriteOps   float64 `json:"write_ops_per_sec"`
+}
+
 // Pressure is Linux pressure-stall information (PSI): the percentage of the
 // last 10 seconds (avg10) in which some / all non-idle tasks were stalled
 // waiting on a resource. CPU "full" is undefined system-wide, so it's omitted.
@@ -134,10 +143,12 @@ type Vitals struct {
 	// MemUsed is Total − Available: memory that can't be reclaimed without
 	// swapping. Droppable page cache doesn't count as used.
 	MemUsed uint64 `json:"mem_used"`
-	// DiskTotal/DiskUsed are the root filesystem, kept for the history chart.
+	// DiskTotal/DiskUsed retain root filesystem capacity for Overview and
+	// API compatibility; Servers displays DiskRate separately from capacity.
 	DiskTotal uint64      `json:"disk_total"`
 	DiskUsed  uint64      `json:"disk_used"`
-	Disks     []DiskUsage `json:"disks"` // per-mount, current snapshot only
+	Disks     []DiskUsage `json:"disks"`     // per-mount, current snapshot only
+	DiskRate  *DiskRate   `json:"disk_rate"` // nil before a usable rate exists
 	// NetRx/NetTx are since-boot byte counters over the non-loopback
 	// interfaces; NetRate is the current throughput, nil on the first reading.
 	NetRx      uint64     `json:"net_rx"`
@@ -159,16 +170,25 @@ type DockerStatus struct {
 }
 
 // FS is the filesystem capability: list/stat within a Managed Root and mutate
-// files (rename/move/delete). All operations take absolute paths.
+// files (rename/move/delete and revision-checked text edits). All operations
+// take absolute paths.
 type FS interface {
 	// Stat returns info for a single path.
 	Stat(path string) (FileInfo, error)
 	// List returns the direct children of a directory (non-recursive).
 	List(dir string) ([]FileInfo, error)
+	// ListWithinRoot returns direct directories with traversal confined to root.
+	ListWithinRoot(root, path string) ([]FileInfo, error)
 	// Walk returns every regular file beneath root (recursive).
 	Walk(root string) ([]FileInfo, error)
 	// Open opens a file's contents for reading/download.
 	Open(path string) (io.ReadCloser, error)
+	// OpenWithinRoot opens only a regular file confined to the Managed Root,
+	// returning current disk metadata and whether it can be edited.
+	OpenWithinRoot(root, path string) (io.ReadSeekCloser, FileInfo, bool, error)
+	// WriteText atomically replaces a regular file if its bytes still match
+	// revision. Symbolic links are never replaced.
+	WriteText(root, path string, data []byte, revision string) (FileInfo, error)
 	// Rename renames/moves a file from oldPath to newPath.
 	Rename(oldPath, newPath string) error
 	// Remove permanently deletes a file (no trash).

@@ -94,17 +94,21 @@ const countResources = `-- name: CountResources :one
 SELECT count(*) FROM resources r
 WHERE ($1::bigint IS NULL OR r.root_id = $1::bigint)
   AND ($2::text IS NULL OR r.path LIKE $2::text)
-  AND ($3::text IS NULL OR r.kind = $3::text)
-  AND ($4::text IS NULL OR EXISTS (
+  AND ($3::text IS NULL OR r.path NOT LIKE $3::text)
+  AND ($4::text IS NULL OR r.name ILIKE $4::text)
+  AND ($5::text IS NULL OR r.kind = $5::text)
+  AND ($6::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
-        WHERE rt.resource_id = r.id AND rt.tag = $4::text))
+        WHERE rt.resource_id = r.id AND rt.tag = $6::text))
 `
 
 type CountResourcesParams struct {
-	RootID     pgtype.Int8 `json:"root_id"`
-	DirPattern pgtype.Text `json:"dir_pattern"`
-	Kind       pgtype.Text `json:"kind"`
-	Tag        pgtype.Text `json:"tag"`
+	RootID       pgtype.Int8 `json:"root_id"`
+	DirPattern   pgtype.Text `json:"dir_pattern"`
+	ChildPattern pgtype.Text `json:"child_pattern"`
+	NamePattern  pgtype.Text `json:"name_pattern"`
+	Kind         pgtype.Text `json:"kind"`
+	Tag          pgtype.Text `json:"tag"`
 }
 
 // The total for the same filter set as ListResourcesPage.
@@ -112,6 +116,8 @@ func (q *Queries) CountResources(ctx context.Context, arg CountResourcesParams) 
 	row := q.db.QueryRow(ctx, countResources,
 		arg.RootID,
 		arg.DirPattern,
+		arg.ChildPattern,
+		arg.NamePattern,
 		arg.Kind,
 		arg.Tag,
 	)
@@ -124,16 +130,20 @@ const countResourcesByKind = `-- name: CountResourcesByKind :many
 SELECT r.kind, count(*) AS count FROM resources r
 WHERE ($1::bigint IS NULL OR r.root_id = $1::bigint)
   AND ($2::text IS NULL OR r.path LIKE $2::text)
-  AND ($3::text IS NULL OR EXISTS (
+  AND ($3::text IS NULL OR r.path NOT LIKE $3::text)
+  AND ($4::text IS NULL OR r.name ILIKE $4::text)
+  AND ($5::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
-        WHERE rt.resource_id = r.id AND rt.tag = $3::text))
+        WHERE rt.resource_id = r.id AND rt.tag = $5::text))
 GROUP BY r.kind
 `
 
 type CountResourcesByKindParams struct {
-	RootID     pgtype.Int8 `json:"root_id"`
-	DirPattern pgtype.Text `json:"dir_pattern"`
-	Tag        pgtype.Text `json:"tag"`
+	RootID       pgtype.Int8 `json:"root_id"`
+	DirPattern   pgtype.Text `json:"dir_pattern"`
+	ChildPattern pgtype.Text `json:"child_pattern"`
+	NamePattern  pgtype.Text `json:"name_pattern"`
+	Tag          pgtype.Text `json:"tag"`
 }
 
 type CountResourcesByKindRow struct {
@@ -141,11 +151,17 @@ type CountResourcesByKindRow struct {
 	Count int64  `json:"count"`
 }
 
-// Per-kind totals for the root / directory-prefix / tag filters, deliberately
+// Per-kind totals for the root / directory-prefix / name / tag filters, deliberately
 // ignoring the kind filter itself so the UI's type chips always show how many
 // Resources of each kind are reachable within the other active filters.
 func (q *Queries) CountResourcesByKind(ctx context.Context, arg CountResourcesByKindParams) ([]CountResourcesByKindRow, error) {
-	rows, err := q.db.Query(ctx, countResourcesByKind, arg.RootID, arg.DirPattern, arg.Tag)
+	rows, err := q.db.Query(ctx, countResourcesByKind,
+		arg.RootID,
+		arg.DirPattern,
+		arg.ChildPattern,
+		arg.NamePattern,
+		arg.Tag,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +232,7 @@ func (q *Queries) GetManagedRoot(ctx context.Context, id int64) (ManagedRoot, er
 }
 
 const getResource = `-- name: GetResource :one
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at, kind FROM resources WHERE id = $1
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources WHERE id = $1
 `
 
 func (q *Queries) GetResource(ctx context.Context, id int64) (Resource, error) {
@@ -231,7 +247,6 @@ func (q *Queries) GetResource(ctx context.Context, id int64) (Resource, error) {
 		&i.IsDir,
 		&i.ModifiedAt,
 		&i.State,
-		&i.Note,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,
@@ -240,7 +255,7 @@ func (q *Queries) GetResource(ctx context.Context, id int64) (Resource, error) {
 }
 
 const getResourceByPath = `-- name: GetResourceByPath :one
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at, kind FROM resources WHERE path = $1
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources WHERE path = $1
 `
 
 func (q *Queries) GetResourceByPath(ctx context.Context, path string) (Resource, error) {
@@ -255,7 +270,6 @@ func (q *Queries) GetResourceByPath(ctx context.Context, path string) (Resource,
 		&i.IsDir,
 		&i.ModifiedAt,
 		&i.State,
-		&i.Note,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,
@@ -386,6 +400,44 @@ func (q *Queries) ListResourceDigestByRoot(ctx context.Context, rootID int64) ([
 	return items, nil
 }
 
+const listResourceDirectories = `-- name: ListResourceDirectories :many
+SELECT DISTINCT ($1::text ||
+  split_part(substring(r.path FROM length($1::text) + 1), '/', 1))::text AS path
+FROM resources r
+WHERE r.root_id = $2::bigint
+  AND r.path LIKE $3::text
+  AND strpos(substring(r.path FROM length($1::text) + 1), '/') > 0
+ORDER BY path ASC
+`
+
+type ListResourceDirectoriesParams struct {
+	ParentPrefix string `json:"parent_prefix"`
+	RootID       int64  `json:"root_id"`
+	DirPattern   string `json:"dir_pattern"`
+}
+
+// Immediate ancestor directories from the index keep Missing Resources
+// reachable even after their parent directories disappear from disk.
+func (q *Queries) ListResourceDirectories(ctx context.Context, arg ListResourceDirectoriesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listResourceDirectories, arg.ParentPrefix, arg.RootID, arg.DirPattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		items = append(items, path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listResourceIDsByRoot = `-- name: ListResourceIDsByRoot :many
 SELECT id, path FROM resources
 WHERE root_id = $1
@@ -417,7 +469,7 @@ func (q *Queries) ListResourceIDsByRoot(ctx context.Context, rootID int64) ([]Li
 }
 
 const listResourcesByIDs = `-- name: ListResourcesByIDs :many
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at, kind FROM resources
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources
 WHERE id = ANY($1::bigint[])
 ORDER BY path ASC
 `
@@ -440,7 +492,6 @@ func (q *Queries) ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resour
 			&i.IsDir,
 			&i.ModifiedAt,
 			&i.State,
-			&i.Note,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Kind,
@@ -456,36 +507,56 @@ func (q *Queries) ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resour
 }
 
 const listResourcesPage = `-- name: ListResourcesPage :many
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at, kind FROM resources r
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources r
 WHERE ($1::bigint IS NULL OR r.root_id = $1::bigint)
   AND ($2::text IS NULL OR r.path LIKE $2::text)
-  AND ($3::text IS NULL OR r.kind = $3::text)
-  AND ($4::text IS NULL OR EXISTS (
+  AND ($3::text IS NULL OR r.path NOT LIKE $3::text)
+  AND ($4::text IS NULL OR r.name ILIKE $4::text)
+  AND ($5::text IS NULL OR r.kind = $5::text)
+  AND ($6::text IS NULL OR EXISTS (
         SELECT 1 FROM resource_tags rt
-        WHERE rt.resource_id = r.id AND rt.tag = $4::text))
-ORDER BY r.path ASC
-LIMIT $6 OFFSET $5
+        WHERE rt.resource_id = r.id AND rt.tag = $6::text))
+ORDER BY r.is_dir DESC,
+  CASE WHEN $7::text = 'name' AND $8::text = 'asc' THEN lower(r.name) END ASC,
+  CASE WHEN $7::text = 'name' AND $8::text = 'desc' THEN lower(r.name) END DESC,
+  CASE WHEN $7::text = 'size' AND $8::text = 'asc' THEN r.size END ASC,
+  CASE WHEN $7::text = 'size' AND $8::text = 'desc' THEN r.size END DESC,
+  CASE WHEN $7::text = 'modified' AND $8::text = 'asc' THEN r.modified_at END ASC NULLS LAST,
+  CASE WHEN $7::text = 'modified' AND $8::text = 'desc' THEN r.modified_at END DESC NULLS LAST,
+  r.path ASC
+LIMIT NULLIF($10::int, 0) OFFSET $9
 `
 
 type ListResourcesPageParams struct {
-	RootID     pgtype.Int8 `json:"root_id"`
-	DirPattern pgtype.Text `json:"dir_pattern"`
-	Kind       pgtype.Text `json:"kind"`
-	Tag        pgtype.Text `json:"tag"`
-	PageOffset int32       `json:"page_offset"`
-	PageLimit  int32       `json:"page_limit"`
+	RootID       pgtype.Int8 `json:"root_id"`
+	DirPattern   pgtype.Text `json:"dir_pattern"`
+	ChildPattern pgtype.Text `json:"child_pattern"`
+	NamePattern  pgtype.Text `json:"name_pattern"`
+	Kind         pgtype.Text `json:"kind"`
+	Tag          pgtype.Text `json:"tag"`
+	SortBy       string      `json:"sort_by"`
+	SortOrder    string      `json:"sort_order"`
+	PageOffset   int32       `json:"page_offset"`
+	PageLimit    int32       `json:"page_limit"`
 }
 
-// One page of Resources under the optional root / directory-prefix / tag /
-// kind filters, ordered by path. The prefix is an already-escaped LIKE pattern
+// One page of Resources under optional root / directory-prefix / name / tag /
+// kind filters. child_pattern excludes deeper descendants when browsing one
+// directory. Sorting happens before pagination, with path as a stable tie-break.
+// The prefix is an already-escaped LIKE pattern
 // (e.g. '/data/docs/%'); the tag filter joins resource_tags in SQL; kind
 // matches the generated resource.kind column.
+// Zero is reserved for the complete, direct-child folder view.
 func (q *Queries) ListResourcesPage(ctx context.Context, arg ListResourcesPageParams) ([]Resource, error) {
 	rows, err := q.db.Query(ctx, listResourcesPage,
 		arg.RootID,
 		arg.DirPattern,
+		arg.ChildPattern,
+		arg.NamePattern,
 		arg.Kind,
 		arg.Tag,
+		arg.SortBy,
+		arg.SortOrder,
 		arg.PageOffset,
 		arg.PageLimit,
 	)
@@ -505,7 +576,6 @@ func (q *Queries) ListResourcesPage(ctx context.Context, arg ListResourcesPagePa
 			&i.IsDir,
 			&i.ModifiedAt,
 			&i.State,
-			&i.Note,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Kind,
@@ -639,43 +709,11 @@ func (q *Queries) ResourceSummary(ctx context.Context) (ResourceSummaryRow, erro
 	return i, err
 }
 
-const updateResourceNote = `-- name: UpdateResourceNote :one
-UPDATE resources
-SET note = $2, updated_at = now()
-WHERE id = $1
-RETURNING id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at, kind
-`
-
-type UpdateResourceNoteParams struct {
-	ID   int64  `json:"id"`
-	Note string `json:"note"`
-}
-
-func (q *Queries) UpdateResourceNote(ctx context.Context, arg UpdateResourceNoteParams) (Resource, error) {
-	row := q.db.QueryRow(ctx, updateResourceNote, arg.ID, arg.Note)
-	var i Resource
-	err := row.Scan(
-		&i.ID,
-		&i.RootID,
-		&i.Path,
-		&i.Name,
-		&i.Size,
-		&i.IsDir,
-		&i.ModifiedAt,
-		&i.State,
-		&i.Note,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Kind,
-	)
-	return i, err
-}
-
 const updateResourcePath = `-- name: UpdateResourcePath :one
 UPDATE resources
 SET path = $2, name = $3, root_id = $4, updated_at = now()
 WHERE id = $1
-RETURNING id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at, kind
+RETURNING id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind
 `
 
 type UpdateResourcePathParams struct {
@@ -702,7 +740,6 @@ func (q *Queries) UpdateResourcePath(ctx context.Context, arg UpdateResourcePath
 		&i.IsDir,
 		&i.ModifiedAt,
 		&i.State,
-		&i.Note,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,
@@ -721,7 +758,7 @@ SET root_id     = EXCLUDED.root_id,
     modified_at = EXCLUDED.modified_at,
     state       = 'present',
     updated_at  = now()
-RETURNING id, root_id, path, name, size, is_dir, modified_at, state, note, created_at, updated_at, kind
+RETURNING id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind
 `
 
 type UpsertResourceParams struct {
@@ -752,7 +789,6 @@ func (q *Queries) UpsertResource(ctx context.Context, arg UpsertResourceParams) 
 		&i.IsDir,
 		&i.ModifiedAt,
 		&i.State,
-		&i.Note,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,

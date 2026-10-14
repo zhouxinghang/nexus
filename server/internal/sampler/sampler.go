@@ -76,6 +76,12 @@ func (s *Sampler) CaptureOnce(ctx context.Context) error {
 		params.NetRxPps = float8(r.RxPackets)
 		params.NetTxPps = float8(r.TxPackets)
 	}
+	if r := v.DiskRate; r != nil {
+		params.DiskReadRate = float8(r.ReadBytes)
+		params.DiskWriteRate = float8(r.WriteBytes)
+		params.DiskReadIops = float8(r.ReadOps)
+		params.DiskWriteIops = float8(r.WriteOps)
+	}
 	if p := v.Pressure; p != nil {
 		params.PsiCpuSome = float8(p.CPUSome)
 		params.PsiMemSome = float8(p.MemorySome)

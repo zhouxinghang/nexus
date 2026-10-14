@@ -4,9 +4,9 @@ INSERT INTO metric_samples (
     net_rx, net_tx, load1, load5, load15, uptime_secs, top_procs, containers,
     cpu_cores, net_rx_rate, net_tx_rate, net_rx_pps, net_tx_pps,
     psi_cpu_some, psi_mem_some, psi_mem_full, psi_io_some, psi_io_full,
-    self_cpu, self_rss
+    self_cpu, self_rss, disk_read_rate, disk_write_rate, disk_read_iops, disk_write_iops
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-          $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+          $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
 RETURNING *;
 
 -- name: ListMetricSamplesInRange :many
@@ -21,7 +21,7 @@ DELETE FROM metric_samples WHERE taken_at < $1;
 -- Display-time downsampling: average the samples in [from_at, to_at] into
 -- fixed-width time buckets aligned to from_at, one row per non-empty bucket,
 -- ascending. Gauges (CPU, memory/disk used, load, network rates, pressure,
--- Nexus's own usage) are averaged; totals and cumulative counters (net bytes,
+-- disk I/O, Nexus's own usage) are averaged; totals and cumulative counters (net bytes,
 -- uptime, cores) take the bucket's max, i.e. the latest reading. This is
 -- read-path aggregation only — the stored samples and their retention are
 -- untouched.
@@ -47,6 +47,11 @@ SELECT
     coalesce(avg(net_tx_rate), 0)::double precision  AS net_tx_rate,
     coalesce(avg(net_rx_pps), 0)::double precision   AS net_rx_pps,
     coalesce(avg(net_tx_pps), 0)::double precision   AS net_tx_pps,
+    count(disk_read_rate)::bigint                      AS disk_rate_n,
+    coalesce(avg(disk_read_rate), 0)::double precision  AS disk_read_rate,
+    coalesce(avg(disk_write_rate), 0)::double precision AS disk_write_rate,
+    coalesce(avg(disk_read_iops), 0)::double precision  AS disk_read_iops,
+    coalesce(avg(disk_write_iops), 0)::double precision AS disk_write_iops,
     count(psi_cpu_some)::bigint                      AS psi_n,
     coalesce(avg(psi_cpu_some), 0)::double precision AS psi_cpu_some,
     coalesce(avg(psi_mem_some), 0)::double precision AS psi_mem_some,

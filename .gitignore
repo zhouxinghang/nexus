@@ -1,5 +1,7 @@
 # dependencies
 web/node_modules/
+web/test-results/
+web/playwright-report/
 
 # Go build artifacts
 server/nexus

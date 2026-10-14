@@ -82,8 +82,20 @@ func (f *FakeHost) Walk(root string) ([]FileInfo, error) {
 	return out, err
 }
 
+func (f *FakeHost) ListWithinRoot(root, path string) ([]FileInfo, error) {
+	return listWithinRoot(root, path)
+}
+
 func (f *FakeHost) Open(path string) (io.ReadCloser, error) {
 	return os.Open(path)
+}
+
+func (f *FakeHost) OpenWithinRoot(root, path string) (io.ReadSeekCloser, FileInfo, bool, error) {
+	return openWithinRoot(root, path)
+}
+
+func (f *FakeHost) WriteText(root, path string, data []byte, revision string) (FileInfo, error) {
+	return writeText(root, path, data, revision)
 }
 
 func (f *FakeHost) Rename(oldPath, newPath string) error {

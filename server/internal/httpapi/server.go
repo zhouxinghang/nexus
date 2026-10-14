@@ -34,6 +34,8 @@ type Server struct {
 	// bg tracks fire-and-forget work started by handlers (create-time health
 	// checks and metadata fetches) so tests can wait for it deterministically.
 	bg sync.WaitGroup
+	// Striped locks bound memory while serializing concurrent editor saves.
+	fileEdits [64]sync.Mutex
 }
 
 // NewServer builds a Server from its dependencies.

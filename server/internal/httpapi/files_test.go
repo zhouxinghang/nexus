@@ -22,7 +22,6 @@ type resourceResp struct {
 	ModifiedAt *time.Time `json:"modified_at"`
 	State      string     `json:"state"`
 	Kind       string     `json:"kind"`
-	Note       string     `json:"note"`
 	Tags       []string   `json:"tags"`
 }
 
@@ -327,7 +326,7 @@ func TestTagAddAndFilter(t *testing.T) {
 	}
 }
 
-func TestWriteNote(t *testing.T) {
+func TestNotesRemovedAndTagsDoNotAlterContent(t *testing.T) {
 	h := newHarness(t)
 	dir := t.TempDir()
 	f := filepath.Join(dir, "n.txt")
@@ -337,17 +336,20 @@ func TestWriteNote(t *testing.T) {
 	id := resources[0].ID
 
 	nr := h.do(http.MethodPut, path("/api/files/resources/", id)+"/note", map[string]string{"note": "context about this file"})
-	mustStatus(t, nr, http.StatusOK)
-	var res resourceResp
-	decode(t, nr, &res)
-	if res.Note != "context about this file" {
-		t.Errorf("note = %q", res.Note)
+	mustStatus(t, nr, http.StatusNotFound)
+	nr.Body.Close()
+	tr := h.do(http.MethodPost, path("/api/files/resources/", id)+"/tags", map[string]string{"tag": "context"})
+	mustStatus(t, tr, http.StatusOK)
+	var res map[string]any
+	decode(t, tr, &res)
+	if _, exists := res["note"]; exists {
+		t.Fatal("Resource response still exposes note")
 	}
 
 	// The underlying file is never altered by metadata.
 	data, _ := os.ReadFile(f)
 	if string(data) != "x" {
-		t.Errorf("note write altered the file contents: %q", string(data))
+		t.Errorf("tag write altered the file contents: %q", string(data))
 	}
 }
 
@@ -371,11 +373,12 @@ func TestDownloadResource(t *testing.T) {
 
 // resourcePage is the offset envelope returned by GET /api/files/resources.
 type resourcePage struct {
-	Items  []resourceResp   `json:"items"`
-	Total  int64            `json:"total"`
-	Limit  int32            `json:"limit"`
-	Offset int32            `json:"offset"`
-	Kinds  map[string]int64 `json:"kinds"`
+	Items       []resourceResp   `json:"items"`
+	Total       int64            `json:"total"`
+	Limit       int32            `json:"limit"`
+	Offset      int32            `json:"offset"`
+	Kinds       map[string]int64 `json:"kinds"`
+	Directories []directoryResp  `json:"directories"`
 }
 
 func (h *harness) resourcePage(query string) resourcePage {

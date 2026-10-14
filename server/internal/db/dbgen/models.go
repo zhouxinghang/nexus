@@ -231,33 +231,37 @@ type ManagedRoot struct {
 }
 
 type MetricSample struct {
-	ID         int64         `json:"id"`
-	TakenAt    time.Time     `json:"taken_at"`
-	CpuPercent float64       `json:"cpu_percent"`
-	MemTotal   int64         `json:"mem_total"`
-	MemUsed    int64         `json:"mem_used"`
-	DiskTotal  int64         `json:"disk_total"`
-	DiskUsed   int64         `json:"disk_used"`
-	NetRx      int64         `json:"net_rx"`
-	NetTx      int64         `json:"net_tx"`
-	Load1      float64       `json:"load1"`
-	Load5      float64       `json:"load5"`
-	Load15     float64       `json:"load15"`
-	UptimeSecs int64         `json:"uptime_secs"`
-	TopProcs   []byte        `json:"top_procs"`
-	Containers []byte        `json:"containers"`
-	CpuCores   pgtype.Int4   `json:"cpu_cores"`
-	NetRxRate  pgtype.Float8 `json:"net_rx_rate"`
-	NetTxRate  pgtype.Float8 `json:"net_tx_rate"`
-	NetRxPps   pgtype.Float8 `json:"net_rx_pps"`
-	NetTxPps   pgtype.Float8 `json:"net_tx_pps"`
-	PsiCpuSome pgtype.Float8 `json:"psi_cpu_some"`
-	PsiMemSome pgtype.Float8 `json:"psi_mem_some"`
-	PsiMemFull pgtype.Float8 `json:"psi_mem_full"`
-	PsiIoSome  pgtype.Float8 `json:"psi_io_some"`
-	PsiIoFull  pgtype.Float8 `json:"psi_io_full"`
-	SelfCpu    pgtype.Float8 `json:"self_cpu"`
-	SelfRss    pgtype.Int8   `json:"self_rss"`
+	ID            int64         `json:"id"`
+	TakenAt       time.Time     `json:"taken_at"`
+	CpuPercent    float64       `json:"cpu_percent"`
+	MemTotal      int64         `json:"mem_total"`
+	MemUsed       int64         `json:"mem_used"`
+	DiskTotal     int64         `json:"disk_total"`
+	DiskUsed      int64         `json:"disk_used"`
+	NetRx         int64         `json:"net_rx"`
+	NetTx         int64         `json:"net_tx"`
+	Load1         float64       `json:"load1"`
+	Load5         float64       `json:"load5"`
+	Load15        float64       `json:"load15"`
+	UptimeSecs    int64         `json:"uptime_secs"`
+	TopProcs      []byte        `json:"top_procs"`
+	Containers    []byte        `json:"containers"`
+	CpuCores      pgtype.Int4   `json:"cpu_cores"`
+	NetRxRate     pgtype.Float8 `json:"net_rx_rate"`
+	NetTxRate     pgtype.Float8 `json:"net_tx_rate"`
+	NetRxPps      pgtype.Float8 `json:"net_rx_pps"`
+	NetTxPps      pgtype.Float8 `json:"net_tx_pps"`
+	PsiCpuSome    pgtype.Float8 `json:"psi_cpu_some"`
+	PsiMemSome    pgtype.Float8 `json:"psi_mem_some"`
+	PsiMemFull    pgtype.Float8 `json:"psi_mem_full"`
+	PsiIoSome     pgtype.Float8 `json:"psi_io_some"`
+	PsiIoFull     pgtype.Float8 `json:"psi_io_full"`
+	SelfCpu       pgtype.Float8 `json:"self_cpu"`
+	SelfRss       pgtype.Int8   `json:"self_rss"`
+	DiskReadRate  pgtype.Float8 `json:"disk_read_rate"`
+	DiskWriteRate pgtype.Float8 `json:"disk_write_rate"`
+	DiskReadIops  pgtype.Float8 `json:"disk_read_iops"`
+	DiskWriteIops pgtype.Float8 `json:"disk_write_iops"`
 }
 
 type Resource struct {
@@ -269,7 +273,6 @@ type Resource struct {
 	IsDir      bool          `json:"is_dir"`
 	ModifiedAt *time.Time    `json:"modified_at"`
 	State      ResourceState `json:"state"`
-	Note       string        `json:"note"`
 	CreatedAt  time.Time     `json:"created_at"`
 	UpdatedAt  time.Time     `json:"updated_at"`
 	Kind       string        `json:"kind"`

@@ -29,7 +29,7 @@ _Avoid_: home, dashboard, index
 
 **Resource**:
 One indexed entry in the Files module, pointing to a real file on the Host's
-filesystem. Nexus stores its metadata plus Owner-added tags and notes, and can
+filesystem. Nexus stores its metadata plus Owner-added tags, and can
 rename, move, or delete the underlying file (operations confined to inside a
 Managed Root). There are no external-URL resources.
 _Avoid_: document, material, asset, attachment, file, link
@@ -52,7 +52,7 @@ _Avoid_: reindex, sync, crawl, refresh
 
 **Missing** (resource state):
 A Resource whose underlying file has disappeared from disk (deleted by something
-other than Nexus). Kept, not auto-removed, so its tags and notes survive; shown
+other than Nexus). Kept, not auto-removed, so its tags survive; shown
 greyed out until the Owner clears it. Disk is the source of truth for existence.
 _Avoid_: orphaned, stale, dangling
 

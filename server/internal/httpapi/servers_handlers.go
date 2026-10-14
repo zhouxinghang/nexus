@@ -25,7 +25,7 @@ func (s *Server) registerServerRoutes(r chi.Router) {
 	r.Get("/servers/containers/{id}", s.handleContainerDetail)
 }
 
-// vitalsResponse is the live snapshot. net_rate, pressure and self are null
+// vitalsResponse is the live snapshot. disk_rate, net_rate, pressure and self are null
 // when the Host can't provide them (first reading, non-Linux, unreadable).
 type vitalsResponse struct {
 	CPUPercent float64           `json:"cpu_percent"`
@@ -35,6 +35,7 @@ type vitalsResponse struct {
 	DiskTotal  uint64            `json:"disk_total"`
 	DiskUsed   uint64            `json:"disk_used"`
 	Disks      []host.DiskUsage  `json:"disks"`
+	DiskRate   *host.DiskRate    `json:"disk_rate"`
 	NetRx      uint64            `json:"net_rx"`
 	NetTx      uint64            `json:"net_tx"`
 	NetRate    *host.NetRate     `json:"net_rate"`
@@ -62,6 +63,7 @@ func (s *Server) handleServerCurrent(w http.ResponseWriter, r *http.Request) {
 		DiskTotal:  v.DiskTotal,
 		DiskUsed:   v.DiskUsed,
 		Disks:      v.Disks,
+		DiskRate:   v.DiskRate,
 		NetRx:      v.NetRx,
 		NetTx:      v.NetTx,
 		NetRate:    v.NetRate,
@@ -89,35 +91,39 @@ func (s *Server) handleServerCurrent(w http.ResponseWriter, r *http.Request) {
 // sampleResponse is one Metric Sample (or one bucket of them). The fields
 // after uptime_secs are flat and nullable so a chart can plot them directly:
 // null means the sample had no reading — taken before the column existed,
-// off Linux (psi_*), or on the Host's first reading (net rates).
+// off Linux (psi_*), or without a usable baseline (disk/network rates).
 type sampleResponse struct {
-	ID         int64            `json:"id"`
-	TakenAt    time.Time        `json:"taken_at"`
-	CPUPercent float64          `json:"cpu_percent"`
-	MemTotal   int64            `json:"mem_total"`
-	MemUsed    int64            `json:"mem_used"`
-	DiskTotal  int64            `json:"disk_total"`
-	DiskUsed   int64            `json:"disk_used"`
-	NetRx      int64            `json:"net_rx"`
-	NetTx      int64            `json:"net_tx"`
-	Load1      float64          `json:"load1"`
-	Load5      float64          `json:"load5"`
-	Load15     float64          `json:"load15"`
-	UptimeSecs int64            `json:"uptime_secs"`
-	CPUCores   *int32           `json:"cpu_cores"`
-	NetRxRate  *float64         `json:"net_rx_rate"` // bytes/s
-	NetTxRate  *float64         `json:"net_tx_rate"`
-	NetRxPps   *float64         `json:"net_rx_pps"` // packets/s
-	NetTxPps   *float64         `json:"net_tx_pps"`
-	PsiCPUSome *float64         `json:"psi_cpu_some"` // % of the last 10s
-	PsiMemSome *float64         `json:"psi_mem_some"`
-	PsiMemFull *float64         `json:"psi_mem_full"`
-	PsiIOSome  *float64         `json:"psi_io_some"`
-	PsiIOFull  *float64         `json:"psi_io_full"`
-	SelfCPU    *float64         `json:"self_cpu"` // Nexus, % of one core
-	SelfRSS    *int64           `json:"self_rss"` // Nexus, bytes
-	TopProcs   []host.Process   `json:"top_procs"`
-	Containers []host.Container `json:"containers"`
+	ID            int64            `json:"id"`
+	TakenAt       time.Time        `json:"taken_at"`
+	CPUPercent    float64          `json:"cpu_percent"`
+	MemTotal      int64            `json:"mem_total"`
+	MemUsed       int64            `json:"mem_used"`
+	DiskTotal     int64            `json:"disk_total"`
+	DiskUsed      int64            `json:"disk_used"`
+	NetRx         int64            `json:"net_rx"`
+	NetTx         int64            `json:"net_tx"`
+	Load1         float64          `json:"load1"`
+	Load5         float64          `json:"load5"`
+	Load15        float64          `json:"load15"`
+	UptimeSecs    int64            `json:"uptime_secs"`
+	CPUCores      *int32           `json:"cpu_cores"`
+	NetRxRate     *float64         `json:"net_rx_rate"` // bytes/s
+	NetTxRate     *float64         `json:"net_tx_rate"`
+	NetRxPps      *float64         `json:"net_rx_pps"` // packets/s
+	NetTxPps      *float64         `json:"net_tx_pps"`
+	DiskReadRate  *float64         `json:"disk_read_rate"` // bytes/s
+	DiskWriteRate *float64         `json:"disk_write_rate"`
+	DiskReadIOPS  *float64         `json:"disk_read_iops"` // operations/s
+	DiskWriteIOPS *float64         `json:"disk_write_iops"`
+	PsiCPUSome    *float64         `json:"psi_cpu_some"` // % of the last 10s
+	PsiMemSome    *float64         `json:"psi_mem_some"`
+	PsiMemFull    *float64         `json:"psi_mem_full"`
+	PsiIOSome     *float64         `json:"psi_io_some"`
+	PsiIOFull     *float64         `json:"psi_io_full"`
+	SelfCPU       *float64         `json:"self_cpu"` // Nexus, % of one core
+	SelfRSS       *int64           `json:"self_rss"` // Nexus, bytes
+	TopProcs      []host.Process   `json:"top_procs"`
+	Containers    []host.Container `json:"containers"`
 }
 
 func optFloat(f pgtype.Float8) *float64 {
@@ -206,31 +212,35 @@ func (s *Server) handleServerSamples(w http.ResponseWriter, r *http.Request) {
 			conts = []host.Container{}
 		}
 		row := sampleResponse{
-			ID:         s.ID,
-			TakenAt:    s.TakenAt,
-			CPUPercent: s.CpuPercent,
-			MemTotal:   s.MemTotal,
-			MemUsed:    s.MemUsed,
-			DiskTotal:  s.DiskTotal,
-			DiskUsed:   s.DiskUsed,
-			NetRx:      s.NetRx,
-			NetTx:      s.NetTx,
-			Load1:      s.Load1,
-			Load5:      s.Load5,
-			Load15:     s.Load15,
-			UptimeSecs: s.UptimeSecs,
-			NetRxRate:  optFloat(s.NetRxRate),
-			NetTxRate:  optFloat(s.NetTxRate),
-			NetRxPps:   optFloat(s.NetRxPps),
-			NetTxPps:   optFloat(s.NetTxPps),
-			PsiCPUSome: optFloat(s.PsiCpuSome),
-			PsiMemSome: optFloat(s.PsiMemSome),
-			PsiMemFull: optFloat(s.PsiMemFull),
-			PsiIOSome:  optFloat(s.PsiIoSome),
-			PsiIOFull:  optFloat(s.PsiIoFull),
-			SelfCPU:    optFloat(s.SelfCpu),
-			TopProcs:   procs,
-			Containers: conts,
+			ID:            s.ID,
+			TakenAt:       s.TakenAt,
+			CPUPercent:    s.CpuPercent,
+			MemTotal:      s.MemTotal,
+			MemUsed:       s.MemUsed,
+			DiskTotal:     s.DiskTotal,
+			DiskUsed:      s.DiskUsed,
+			NetRx:         s.NetRx,
+			NetTx:         s.NetTx,
+			Load1:         s.Load1,
+			Load5:         s.Load5,
+			Load15:        s.Load15,
+			UptimeSecs:    s.UptimeSecs,
+			NetRxRate:     optFloat(s.NetRxRate),
+			NetTxRate:     optFloat(s.NetTxRate),
+			NetRxPps:      optFloat(s.NetRxPps),
+			NetTxPps:      optFloat(s.NetTxPps),
+			DiskReadRate:  optFloat(s.DiskReadRate),
+			DiskWriteRate: optFloat(s.DiskWriteRate),
+			DiskReadIOPS:  optFloat(s.DiskReadIops),
+			DiskWriteIOPS: optFloat(s.DiskWriteIops),
+			PsiCPUSome:    optFloat(s.PsiCpuSome),
+			PsiMemSome:    optFloat(s.PsiMemSome),
+			PsiMemFull:    optFloat(s.PsiMemFull),
+			PsiIOSome:     optFloat(s.PsiIoSome),
+			PsiIOFull:     optFloat(s.PsiIoFull),
+			SelfCPU:       optFloat(s.SelfCpu),
+			TopProcs:      procs,
+			Containers:    conts,
 		}
 		if s.CpuCores.Valid {
 			row.CPUCores = &s.CpuCores.Int32
@@ -261,33 +271,37 @@ func (s *Server) writeBucketedSamples(w http.ResponseWriter, r *http.Request, fr
 	out := make([]sampleResponse, 0, len(rows))
 	for _, b := range rows {
 		out = append(out, sampleResponse{
-			ID:         b.ID,
-			TakenAt:    b.BucketAt,
-			CPUPercent: b.CpuPercent,
-			MemTotal:   b.MemTotal,
-			MemUsed:    b.MemUsed,
-			DiskTotal:  b.DiskTotal,
-			DiskUsed:   b.DiskUsed,
-			NetRx:      b.NetRx,
-			NetTx:      b.NetTx,
-			Load1:      b.Load1,
-			Load5:      b.Load5,
-			Load15:     b.Load15,
-			UptimeSecs: b.UptimeSecs,
-			CPUCores:   optIf(int64(b.CpuCores), b.CpuCores),
-			NetRxRate:  optIf(b.NetRateN, b.NetRxRate),
-			NetTxRate:  optIf(b.NetRateN, b.NetTxRate),
-			NetRxPps:   optIf(b.NetRateN, b.NetRxPps),
-			NetTxPps:   optIf(b.NetRateN, b.NetTxPps),
-			PsiCPUSome: optIf(b.PsiN, b.PsiCpuSome),
-			PsiMemSome: optIf(b.PsiN, b.PsiMemSome),
-			PsiMemFull: optIf(b.PsiN, b.PsiMemFull),
-			PsiIOSome:  optIf(b.PsiN, b.PsiIoSome),
-			PsiIOFull:  optIf(b.PsiN, b.PsiIoFull),
-			SelfCPU:    optIf(b.SelfN, b.SelfCpu),
-			SelfRSS:    optIf(b.SelfN, b.SelfRss),
-			TopProcs:   []host.Process{},
-			Containers: []host.Container{},
+			ID:            b.ID,
+			TakenAt:       b.BucketAt,
+			CPUPercent:    b.CpuPercent,
+			MemTotal:      b.MemTotal,
+			MemUsed:       b.MemUsed,
+			DiskTotal:     b.DiskTotal,
+			DiskUsed:      b.DiskUsed,
+			NetRx:         b.NetRx,
+			NetTx:         b.NetTx,
+			Load1:         b.Load1,
+			Load5:         b.Load5,
+			Load15:        b.Load15,
+			UptimeSecs:    b.UptimeSecs,
+			CPUCores:      optIf(int64(b.CpuCores), b.CpuCores),
+			NetRxRate:     optIf(b.NetRateN, b.NetRxRate),
+			NetTxRate:     optIf(b.NetRateN, b.NetTxRate),
+			NetRxPps:      optIf(b.NetRateN, b.NetRxPps),
+			NetTxPps:      optIf(b.NetRateN, b.NetTxPps),
+			DiskReadRate:  optIf(b.DiskRateN, b.DiskReadRate),
+			DiskWriteRate: optIf(b.DiskRateN, b.DiskWriteRate),
+			DiskReadIOPS:  optIf(b.DiskRateN, b.DiskReadIops),
+			DiskWriteIOPS: optIf(b.DiskRateN, b.DiskWriteIops),
+			PsiCPUSome:    optIf(b.PsiN, b.PsiCpuSome),
+			PsiMemSome:    optIf(b.PsiN, b.PsiMemSome),
+			PsiMemFull:    optIf(b.PsiN, b.PsiMemFull),
+			PsiIOSome:     optIf(b.PsiN, b.PsiIoSome),
+			PsiIOFull:     optIf(b.PsiN, b.PsiIoFull),
+			SelfCPU:       optIf(b.SelfN, b.SelfCpu),
+			SelfRSS:       optIf(b.SelfN, b.SelfRss),
+			TopProcs:      []host.Process{},
+			Containers:    []host.Container{},
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

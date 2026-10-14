@@ -61,6 +61,12 @@ type NetRate = {
   rx_packets_per_sec: number;
   tx_packets_per_sec: number;
 };
+type DiskRate = {
+  read_bytes_per_sec: number;
+  write_bytes_per_sec: number;
+  read_ops_per_sec: number;
+  write_ops_per_sec: number;
+};
 // Linux pressure-stall information, avg10 percentages.
 type Pressure = {
   cpu_some: number;
@@ -77,6 +83,7 @@ type Current = {
   disk_total: number;
   disk_used: number;
   disks: Disk[];
+  disk_rate: DiskRate | null;
   net_rx: number;
   net_tx: number;
   net_rate: NetRate | null; // null until two readings exist
@@ -90,7 +97,7 @@ type Current = {
   docker: { enabled: boolean; containers: Container[] };
 };
 // The nullable fields are absent on samples taken before they were recorded,
-// off Linux (psi_*), or on the Host's first reading (net rates).
+// off Linux (psi_*), or without a usable baseline (disk/network rates).
 type Sample = {
   taken_at: string;
   cpu_percent: number;
@@ -101,6 +108,10 @@ type Sample = {
   load1: number;
   net_rx_rate: number | null;
   net_tx_rate: number | null;
+  disk_read_rate: number | null;
+  disk_write_rate: number | null;
+  disk_read_iops: number | null;
+  disk_write_iops: number | null;
   psi_cpu_some: number | null;
   psi_mem_some: number | null;
   psi_io_some: number | null;
@@ -151,6 +162,38 @@ function Stat({
       </div>
       <div className="mt-2 text-xl font-semibold tabular-nums">{value}</div>
       {sub && <div className="mt-0.5 text-xs tabular-nums text-muted-foreground">{sub}</div>}
+    </Card>
+  );
+}
+
+function DiskIOStat({ value }: { value: DiskRate | null }) {
+  return (
+    <Card className="min-w-0 p-4" aria-label="Disk I/O statistics">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <HardDrive size={15} aria-hidden />
+        <span className="text-xs font-medium uppercase tracking-wide">Disk I/O</span>
+      </div>
+      {value ? (
+        <dl className="mt-2 space-y-1">
+          {[
+            { label: "Read", bytes: value.read_bytes_per_sec, ops: value.read_ops_per_sec },
+            { label: "Write", bytes: value.write_bytes_per_sec, ops: value.write_ops_per_sec },
+          ].map((item) => (
+            <div key={item.label} className="flex flex-wrap items-baseline justify-between gap-x-2">
+              <dt className="text-xs text-muted-foreground">{item.label}</dt>
+              <dd className="text-right tabular-nums">
+                <span className="block text-base font-semibold">{rate(item.bytes)}</span>
+                <span className="block text-[11px] text-muted-foreground">{pps(item.ops)} IOPS</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <div className="mt-2">
+          <div className="text-xl font-semibold">No data</div>
+          <p className="mt-0.5 text-xs text-muted-foreground">Waiting for usable disk counters.</p>
+        </div>
+      )}
     </Card>
   );
 }
@@ -236,9 +279,11 @@ export default function Servers() {
 
   const chartData = samples.map((s) => ({
     t: timeLabel(s.taken_at, range),
+    at: s.taken_at,
     cpu: round(s.cpu_percent),
     memPct: s.mem_total ? round((s.mem_used / s.mem_total) * 100) : 0,
-    diskPct: s.disk_total ? round((s.disk_used / s.disk_total) * 100) : 0,
+    diskRead: round(s.disk_read_rate, 0),
+    diskWrite: round(s.disk_write_rate, 0),
     rx: round(s.net_rx_rate, 0),
     tx: round(s.net_tx_rate, 0),
     load: round(s.load1, 2),
@@ -302,16 +347,7 @@ export default function Servers() {
               sub={`${bytes(Math.max(0, cur.mem_total - cur.mem_used))} available`}
               title="Used = total − available; reclaimable page cache doesn't count."
             />
-            <Stat
-              icon={HardDrive}
-              label="Disk"
-              value={`${bytes(cur.disk_used)} / ${bytes(cur.disk_total)}`}
-              sub={
-                cur.disk_total
-                  ? `${bytes(cur.disk_total - cur.disk_used)} free on /`
-                  : undefined
-              }
-            />
+            <DiskIOStat value={cur.disk_rate} />
             {cur.net_rate ? (
               <Stat
                 icon={Network}
@@ -390,10 +426,16 @@ export default function Servers() {
               unit="%"
             />
             <Chart
-              title="Disk %"
+              title="Disk I/O throughput"
               data={chartData}
-              series={[{ key: "diskPct", label: "Disk" }]}
-              unit="%"
+              series={[
+                { key: "diskRead", label: "Read" },
+                { key: "diskWrite", label: "Write", tone: "orange", dashed: true },
+              ]}
+              format={rate}
+              axisWidth={84}
+              noDataMessage="No disk I/O history yet. New readings will appear after sampling."
+              showDataTable
             />
             <Chart
               title="Network throughput"
@@ -849,7 +891,7 @@ const tones = {
   orange: { light: "#ea580c", dark: "#fb923c" },
   violet: { light: "#7c3aed", dark: "#a78bfa" },
 };
-type Series = { key: string; label: string; tone?: keyof typeof tones; right?: boolean };
+type Series = { key: string; label: string; tone?: keyof typeof tones; right?: boolean; dashed?: boolean };
 
 // Chart plots one or more series over the samples. Null points (a sample with
 // no reading for that series) leave a gap rather than drawing a false zero.
@@ -863,6 +905,8 @@ function Chart({
   rightUnit,
   refLine,
   axisWidth = 44,
+  noDataMessage,
+  showDataTable = false,
 }: {
   title: string;
   data: Record<string, number | string | null>[];
@@ -872,6 +916,8 @@ function Chart({
   rightUnit?: string;
   refLine?: { y: number; label: string };
   axisWidth?: number;
+  noDataMessage?: string;
+  showDataTable?: boolean;
 }) {
   const { theme } = useTheme();
   const grid = theme === "dark" ? "#1e293b" : "#e2e8f0";
@@ -880,24 +926,33 @@ function Chart({
   const fmt = (v: number) => (format ? format(v) : `${v}${unit ?? ""}`);
   const fmtRight = (v: number) => `${v}${rightUnit ?? ""}`;
   const hasRight = series.some((s) => s.right);
+  const hasData = data.some((row) => series.some((s) => row[s.key] != null));
 
   return (
-    <Card className="p-4">
-      <div className="mb-3 flex items-center gap-3">
+    <Card className="min-w-0 p-4" aria-label={title}>
+      <div className="mb-3 flex flex-wrap items-center gap-3">
         <h2 className="text-sm font-semibold text-muted-foreground">{title}</h2>
         {series.length > 1 && (
           <div className="ml-auto flex items-center gap-3 text-[11px] text-muted-foreground">
             {series.map((s) => (
               <span key={s.key} className="inline-flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full" style={{ background: color(s) }} />
+                <span
+                  aria-hidden
+                  className={s.dashed ? "w-3 border-t-2 border-dashed" : "w-3 border-t-2"}
+                  style={{ borderColor: color(s) }}
+                />
                 {s.label}
               </span>
             ))}
           </div>
         )}
       </div>
-      <ResponsiveContainer width="100%" height={180}>
-        <AreaChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+      {!hasData && noDataMessage ? (
+        <div role="status" className="flex min-h-[180px] items-center justify-center px-3 text-center text-sm text-muted-foreground">
+          {noDataMessage}
+        </div>
+      ) : <ResponsiveContainer width="100%" height={180}>
+        <AreaChart data={data} accessibilityLayer margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
           <defs>
             {series.map((s) => (
               <linearGradient key={s.key} id={`grad-${s.key}`} x1="0" y1="0" x2="0" y2="1">
@@ -965,13 +1020,40 @@ function Chart({
               name={s.label}
               stroke={color(s)}
               strokeWidth={2}
+              strokeDasharray={s.dashed ? "5 3" : undefined}
               fill={`url(#grad-${s.key})`}
               dot={false}
               isAnimationActive={false}
             />
           ))}
         </AreaChart>
-      </ResponsiveContainer>
+      </ResponsiveContainer>}
+      {showDataTable && hasData && (
+        <details className="mt-3 border-t border-border pt-2">
+          <summary className="cursor-pointer rounded text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            View disk I/O data
+          </summary>
+          <div className="mt-2 max-h-56 overflow-auto">
+            <table className="w-full text-xs">
+              <caption className="sr-only">Disk I/O history in bytes per second</caption>
+              <thead>
+                <tr className="text-left text-muted-foreground">
+                  <th scope="col" className="pb-1 font-medium">Time</th>
+                  {series.map((s) => <th key={s.key} scope="col" className="pb-1 text-right font-medium">{s.label}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((row, i) => (
+                  <tr key={i} className="border-t border-border/60">
+                    <th scope="row" className="py-1 text-left font-normal">{new Date(String(row.at)).toLocaleString()}</th>
+                    {series.map((s) => <td key={s.key} className="py-1 text-right tabular-nums">{row[s.key] == null ? "—" : fmt(Number(row[s.key]))}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </Card>
   );
 }
