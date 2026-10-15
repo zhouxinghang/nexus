@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { useToast } from "@/lib/toast";
 import { Button, Card, Textarea, Input, EmptyState, Skeleton } from "@/components/ui";
 import { BookText, Check, Copy, Search, X } from "lucide-react";
@@ -16,9 +17,12 @@ export default function Journal() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [manualCopy, setManualCopy] = useState<Entry | null>(null);
   const toast = useToast();
   const activeQuery = useRef("");
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copying = useRef(false);
+  const copyVersion = useRef(0);
 
   function pagePath(q: string, cursor?: string) {
     const params = new URLSearchParams();
@@ -65,19 +69,30 @@ export default function Journal() {
     load();
     return () => {
       if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyVersion.current++;
     };
   }, []);
 
   async function copyEntry(entry: Entry) {
+    if (copying.current) return;
+    copying.current = true;
+    const version = ++copyVersion.current;
+    setCopiedId(null);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
     try {
-      await navigator.clipboard.writeText(entry.body);
-      setCopiedId(entry.id);
-      if (copyTimer.current) clearTimeout(copyTimer.current);
-      copyTimer.current = setTimeout(() => setCopiedId(null), 1500);
-      toast.success("Copied to clipboard");
+      const copied = await copyText(entry.body);
+      if (version !== copyVersion.current) return;
+      if (copied) {
+        setCopiedId(entry.id);
+        copyTimer.current = setTimeout(() => setCopiedId(null), 1500);
+        toast.success("Copied to clipboard");
+      } else {
+        setManualCopy(entry);
+      }
     } catch {
-      // Clipboard unavailable (e.g. non-secure context).
-      toast.error("Clipboard unavailable");
+      if (version === copyVersion.current) setManualCopy(entry);
+    } finally {
+      copying.current = false;
     }
   }
 
@@ -198,7 +213,7 @@ export default function Journal() {
                   size="icon-sm"
                   aria-label={copiedId === e.id ? "Copied" : "Copy entry"}
                   title={copiedId === e.id ? "Copied" : "Copy entry"}
-                  className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                  className="opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
                   onClick={() => copyEntry(e)}
                 >
                   {copiedId === e.id ? (
@@ -228,6 +243,68 @@ export default function Journal() {
           </div>
         )}
       </div>
+      {manualCopy && <ManualCopyDialog text={manualCopy.body} onClose={() => setManualCopy(null)} />}
     </div>
+  );
+}
+
+function ManualCopyDialog({ text, onClose }: { text: string; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const id = useId();
+
+  function selectText() {
+    fieldRef.current?.focus({ preventScroll: true });
+    fieldRef.current?.select();
+  }
+
+  useEffect(() => {
+    const dialog = dialogRef.current!;
+    const trigger = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+    selectText();
+    return () => {
+      dialog.close();
+      document.body.style.overflow = previousOverflow;
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    };
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-help`}
+      className="max-h-[85dvh] w-[calc(100%-2rem)] max-w-xl overflow-auto rounded-xl border border-border bg-card p-0 text-card-foreground shadow-pop backdrop:bg-foreground/40"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+        <h2 id={`${id}-title`} className="font-semibold">Copy Journal Entry manually</h2>
+        <Button size="icon-sm" variant="ghost" aria-label="Close manual copy" onClick={onClose}>
+          <X size={16} aria-hidden />
+        </Button>
+      </div>
+      <div className="space-y-3 p-5">
+        <p id={`${id}-help`} className="text-sm text-muted-foreground">
+          Your browser blocked automatic copying. Press Ctrl/Cmd+C, or use your device's Copy action on the selected text.
+        </p>
+        <label htmlFor={`${id}-text`} className="block text-sm font-medium">Journal Entry text</label>
+        <textarea
+          ref={fieldRef}
+          id={`${id}-text`}
+          aria-describedby={`${id}-help`}
+          value={text}
+          readOnly
+          spellCheck={false}
+          className="h-40 max-h-[35dvh] w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-base leading-relaxed outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 sm:text-sm"
+        />
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={selectText}>Select all text</Button>
+          <Button onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    </dialog>
   );
 }

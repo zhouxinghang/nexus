@@ -128,6 +128,19 @@ original representation.
 After frontend changes, rebuild **and restart the Go process**: the SPA and its
 gzip files are embedded at Go compile time.
 
+## Copying Journal Entries
+
+Journal's Copy button first uses the browser Clipboard API when available. On
+ordinary HTTP or when that API rejects access, it attempts user-initiated text
+selection copying without changing the Journal Entry or the append draft.
+Temporary copy controls are removed and focus/selection are restored.
+
+If the browser blocks both clipboard paths, a read-only dialog selects the
+original text for Ctrl/Cmd+C or the device's Copy action. The dialog contains
+keyboard focus, closes with Escape, and returns focus to the Copy button.
+Successful-copy feedback is shown only when an automatic copy succeeds.
+The Copy button stays visible on small screens.
+
 ## Host disk I/O statistics
 
 Servers' **Disk I/O** card shows Host-wide read/write throughput (KB/s, MB/s)
