@@ -2,15 +2,14 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Config holds the backend's runtime configuration, sourced from the
-// environment. The password hash and JWT signing key live here (config/env),
-// never in the database — see the Nexus spec.
+// Config holds runtime configuration, sourced from exported environment
+// variables with optional .env defaults. The password hash and JWT signing key
+// live here (config/env), never in the database — see the Nexus spec.
 type Config struct {
 	Addr          string // HTTP listen address, e.g. ":8080"
 	DatabaseURL   string // Postgres connection string
@@ -25,8 +24,10 @@ type Config struct {
 	LoginLockout     time.Duration // how long a locked-out client waits
 }
 
-// Load reads configuration from the environment, applying defaults where
-// sensible and returning an error when a required value is missing.
+// Load reads an optional .env before applying exported environment variables
+// and defaults. Exports take priority, including explicitly empty values.
+// NEXUS_ENV_FILE chooses a specific file; otherwise .env in the startup working
+// directory is used, falling back to ../.env only when starting in server/.
 //
 // Required: NEXUS_DATABASE_URL, NEXUS_PASSWORD_HASH, NEXUS_JWT_SECRET.
 // Optional (default):
@@ -37,13 +38,17 @@ type Config struct {
 //   - NEXUS_LOGIN_WINDOW (15m) — Go duration
 //   - NEXUS_LOGIN_LOCKOUT (1m) — Go duration
 func Load() (Config, error) {
+	env, err := loadEnvironment()
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		Addr:         envOr("NEXUS_ADDR", ":8080"),
-		DatabaseURL:  os.Getenv("NEXUS_DATABASE_URL"),
-		PasswordHash: os.Getenv("NEXUS_PASSWORD_HASH"),
+		Addr:         env.envOr("NEXUS_ADDR", ":8080"),
+		DatabaseURL:  env.get("NEXUS_DATABASE_URL"),
+		PasswordHash: env.get("NEXUS_PASSWORD_HASH"),
 	}
 
-	key := os.Getenv("NEXUS_JWT_SECRET")
+	key := env.get("NEXUS_JWT_SECRET")
 	if strings.TrimSpace(key) == "" {
 		return Config{}, fmt.Errorf("NEXUS_JWT_SECRET is required")
 	}
@@ -56,47 +61,46 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("NEXUS_PASSWORD_HASH is required")
 	}
 
-	var err error
-	if cfg.CookieSecure, err = envBool("NEXUS_COOKIE_SECURE", true); err != nil {
+	if cfg.CookieSecure, err = env.envBool("NEXUS_COOKIE_SECURE", true); err != nil {
 		return Config{}, err
 	}
-	if cfg.TrustedProxy, err = envBool("NEXUS_TRUSTED_PROXY", false); err != nil {
+	if cfg.TrustedProxy, err = env.envBool("NEXUS_TRUSTED_PROXY", false); err != nil {
 		return Config{}, err
 	}
-	if cfg.LoginMaxFailures, err = envInt("NEXUS_LOGIN_MAX_FAILURES", 5); err != nil {
+	if cfg.LoginMaxFailures, err = env.envInt("NEXUS_LOGIN_MAX_FAILURES", 5); err != nil {
 		return Config{}, err
 	}
-	if cfg.LoginWindow, err = envDuration("NEXUS_LOGIN_WINDOW", 15*time.Minute); err != nil {
+	if cfg.LoginWindow, err = env.envDuration("NEXUS_LOGIN_WINDOW", 15*time.Minute); err != nil {
 		return Config{}, err
 	}
-	if cfg.LoginLockout, err = envDuration("NEXUS_LOGIN_LOCKOUT", time.Minute); err != nil {
+	if cfg.LoginLockout, err = env.envDuration("NEXUS_LOGIN_LOCKOUT", time.Minute); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); strings.TrimSpace(v) != "" {
+func (e environment) envOr(key, fallback string) string {
+	if v := e.get(key); strings.TrimSpace(v) != "" {
 		return v
 	}
 	return fallback
 }
 
-func envBool(key string, fallback bool) (bool, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func (e environment) envBool(key string, fallback bool) (bool, error) {
+	v := strings.TrimSpace(e.get(key))
 	if v == "" {
 		return fallback, nil
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		return false, fmt.Errorf("%s must be a boolean: %w", key, err)
+		return false, fmt.Errorf("%s must be a boolean", key)
 	}
 	return b, nil
 }
 
-func envInt(key string, fallback int) (int, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func (e environment) envInt(key string, fallback int) (int, error) {
+	v := strings.TrimSpace(e.get(key))
 	if v == "" {
 		return fallback, nil
 	}
@@ -107,8 +111,8 @@ func envInt(key string, fallback int) (int, error) {
 	return n, nil
 }
 
-func envDuration(key string, fallback time.Duration) (time.Duration, error) {
-	v := strings.TrimSpace(os.Getenv(key))
+func (e environment) envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(e.get(key))
 	if v == "" {
 		return fallback, nil
 	}

@@ -48,10 +48,46 @@ go run ./cmd/nexus
 Migrations run automatically on startup. Open `http://localhost:8080` and log in
 with the single Owner password.
 
+### Load configuration from `.env`
+
+Instead of exporting each setting, copy `.env.example` to `.env` at the repo
+root, restrict its permissions (`chmod 600 .env`), and fill in the database URL,
+bcrypt password hash and JWT signing key. Use **single quotes** around hashes
+and keys so `$` characters stay literal.
+
+The Go process automatically reads `.env` in its startup working directory.
+When started from `server/`, it falls back to the repo root's `.env` if
+`server/.env` is absent. It loads only the first file found, never merging both.
+No `source` command is needed:
+
+```sh
+cd server
+go run ./cmd/nexus
+```
+
+Exported environment variables take priority over `.env`, including explicitly
+empty values. If the startup shell still exports an old password hash or signing
+key, unset that variable to use the file value. `.env` is optional for
+environment-only deployments. A present but unreadable or malformed file aborts
+startup without logging its contents.
+
+To select a file explicitly (for example, when running a compiled binary from
+another directory), set `NEXUS_ENV_FILE` in the startup environment. Relative
+paths resolve against the startup working directory; an explicitly selected
+missing file is an error. Do not put this selector inside `.env`.
+
+```sh
+NEXUS_ENV_FILE=/absolute/path/to/nexus.env ./nexus
+```
+
+Do not commit `.env` or send it in chat. Settings are read once on startup;
+restart Nexus after editing them.
+
 ### Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `NEXUS_ENV_FILE` | auto-discovery (see above) | explicit dotenv file path, set in the startup environment |
 | `NEXUS_DATABASE_URL` | — (required) | Postgres connection string |
 | `NEXUS_PASSWORD_HASH` | — (required) | bcrypt hash of the Owner password |
 | `NEXUS_JWT_SECRET` | — (required) | session JWT signing key |
