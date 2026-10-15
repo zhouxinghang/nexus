@@ -31,8 +31,8 @@ type Server struct {
 	// scans tracks per-root background scans so the HTTP layer never blocks on
 	// a full directory walk and the UI can poll progress.
 	scans *scanManager
-	// bg tracks fire-and-forget work started by handlers (create-time health
-	// checks and metadata fetches) so tests can wait for it deterministically.
+	// bg tracks fire-and-forget work started by handlers (metadata fetches)
+	// so tests can wait for it deterministically.
 	bg sync.WaitGroup
 	// Striped locks bound memory while serializing concurrent editor saves.
 	fileEdits [64]sync.Mutex
@@ -64,10 +64,6 @@ func (s *Server) goBackground(fn func()) {
 
 // Sampler exposes the background sampler so callers (main, tests) can run it.
 func (s *Server) Sampler() *sampler.Sampler { return s.sampler }
-
-// Checker exposes the background bookmark health checker so callers (main,
-// tests) can run it.
-func (s *Server) Checker() *checker.Checker { return s.checker }
 
 // Router returns the fully-wired http.Handler: the SPA, the public login
 // endpoint, and the authenticated API under /api.

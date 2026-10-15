@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -46,6 +47,79 @@ func TestBookmarkCreateWithNameIconLink(t *testing.T) {
 	}
 	if b.Health != "unknown" {
 		t.Errorf("initial health = %q, want unknown", b.Health)
+	}
+}
+
+func TestBookmarkCreateDoesNotCheckHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ownerName string
+		fetchErr  error
+	}{
+		{name: "named", ownerName: "Example"},
+		{name: "URL only"},
+		{name: "metadata unavailable", fetchErr: errors.New("site unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.fetcher.SetDefault(checker.Meta{Title: "Example Domain"}, tc.fetchErr)
+			b := h.createBookmark(tc.ownerName, "https://example.com")
+			h.server.WaitBackgroundForTest()
+
+			got := h.getBookmark(b.ID)
+			if h.prober.Calls != 0 {
+				t.Errorf("create triggered %d health probes, want none", h.prober.Calls)
+			}
+			if got.Health != "unknown" || got.LastStatus != nil ||
+				got.LastLatencyMs != nil || got.LastCheckedAt != nil {
+				t.Errorf("unchecked bookmark has health results: %+v", got)
+			}
+		})
+	}
+}
+
+func TestBookmarkNonCheckRequestsPreserveHealth(t *testing.T) {
+	h := newHarness(t)
+	b := h.createBookmark("Example", "https://example.com")
+	h.server.WaitBackgroundForTest()
+	h.prober.SetDefault(checker.ProbeResult{Up: false, Status: 503, Latency: time.Millisecond})
+
+	r := h.do(http.MethodPost, path("/api/bookmarks/", b.ID)+"/check", nil)
+	mustStatus(t, r, http.StatusOK)
+	var checked bookmarkResp
+	decode(t, r, &checked)
+
+	// A changed probe result must not affect Health until another manual check.
+	h.prober.SetDefault(checker.ProbeResult{Up: true, Status: 200, Latency: 5 * time.Millisecond})
+	for _, req := range []struct {
+		method string
+		path   string
+		body   interface{}
+		status int
+	}{
+		{http.MethodGet, "/api/bookmarks", nil, http.StatusOK},
+		{http.MethodGet, "/api/overview", nil, http.StatusOK},
+		{http.MethodPost, path("/api/bookmarks/", b.ID) + "/refetch", nil, http.StatusOK},
+		{http.MethodPost, path("/api/bookmarks/", b.ID) + "/click", nil, http.StatusNoContent},
+		{http.MethodPatch, path("/api/bookmarks/", b.ID), map[string]string{
+			"name": "Updated", "url": "https://new.example.com",
+		}, http.StatusOK},
+	} {
+		resp := h.do(req.method, req.path, req.body)
+		mustStatus(t, resp, req.status)
+		resp.Body.Close()
+	}
+	h.server.WaitBackgroundForTest()
+
+	got := h.getBookmark(b.ID)
+	if h.prober.Calls != 1 {
+		t.Errorf("probe calls = %d, want only the single manual check", h.prober.Calls)
+	}
+	if got.Health != checked.Health || got.LastStatus == nil || *got.LastStatus != 503 ||
+		got.LastLatencyMs == nil || *got.LastLatencyMs != 1 ||
+		got.LastCheckedAt == nil || checked.LastCheckedAt == nil ||
+		!got.LastCheckedAt.Equal(*checked.LastCheckedAt) {
+		t.Errorf("non-check request changed Health: before=%+v after=%+v", checked, got)
 	}
 }
 
@@ -195,6 +269,15 @@ func TestBookmarkManualRecheck(t *testing.T) {
 	if rechecked.Health != "up" {
 		t.Errorf("health after recovery = %q, want up", rechecked.Health)
 	}
+	if rechecked.LastStatus == nil || *rechecked.LastStatus != 200 ||
+		rechecked.LastLatencyMs == nil || *rechecked.LastLatencyMs != 1 ||
+		rechecked.LastCheckedAt == nil {
+		t.Errorf("manual recheck did not record probe details: %+v", rechecked)
+	}
+	h.server.WaitBackgroundForTest()
+	if h.prober.Calls != 2 {
+		t.Errorf("probe calls = %d, want one per manual check", h.prober.Calls)
+	}
 }
 
 func TestBookmarkCheckAllEndpoint(t *testing.T) {
@@ -214,6 +297,15 @@ func TestBookmarkCheckAllEndpoint(t *testing.T) {
 		if b.Health != "up" {
 			t.Errorf("bookmark %q health = %q, want up", b.Name, b.Health)
 		}
+		if b.LastStatus == nil || *b.LastStatus != 200 ||
+			b.LastLatencyMs == nil || *b.LastLatencyMs != 1 ||
+			b.LastCheckedAt == nil {
+			t.Errorf("check all did not record probe details: %+v", b)
+		}
+	}
+	h.server.WaitBackgroundForTest()
+	if h.prober.Calls != 2 {
+		t.Errorf("probe calls = %d, want one per bookmark in the manual sweep", h.prober.Calls)
 	}
 }
 

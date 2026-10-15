@@ -272,7 +272,7 @@ func (s *Server) handleSaveResourceContent(w http.ResponseWriter, r *http.Reques
 	err = s.inTx(r, func(q *dbgen.Queries) error {
 		if _, err := q.UpsertResource(r.Context(), dbgen.UpsertResourceParams{
 			RootID: res.RootID, Path: res.Path, Name: res.Name,
-			Size: fi.Size, ModifiedAt: &fi.ModifiedAt,
+			Size: fi.Size, ModifiedAt: &fi.ModifiedAt, FileCreatedAt: fi.CreatedAt,
 		}); err != nil {
 			return err
 		}

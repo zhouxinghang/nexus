@@ -14,10 +14,11 @@ import (
 )
 
 type directoryResponse struct {
-	Path       string     `json:"path"`
-	Name       string     `json:"name"`
-	ModifiedAt *time.Time `json:"modified_at"`
-	State      string     `json:"state"`
+	Path          string     `json:"path"`
+	Name          string     `json:"name"`
+	ModifiedAt    *time.Time `json:"modified_at"`
+	FileCreatedAt *time.Time `json:"file_created_at"`
+	State         string     `json:"state"`
 }
 
 func (s *Server) resourceDirectories(r *http.Request, root dbgen.ManagedRoot, parent, sortBy, order string) ([]directoryResponse, error) {
@@ -39,7 +40,7 @@ func (s *Server) resourceDirectories(r *http.Request, root dbgen.ManagedRoot, pa
 	}
 	for _, fi := range live {
 		mod := fi.ModifiedAt
-		dirs[fi.Path] = directoryResponse{Path: fi.Path, Name: fi.Name, ModifiedAt: &mod, State: "present"}
+		dirs[fi.Path] = directoryResponse{Path: fi.Path, Name: fi.Name, ModifiedAt: &mod, FileCreatedAt: fi.CreatedAt, State: "present"}
 	}
 	out := make([]directoryResponse, 0, len(dirs))
 	for _, dir := range dirs {
@@ -47,16 +48,20 @@ func (s *Server) resourceDirectories(r *http.Request, root dbgen.ManagedRoot, pa
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if sortBy == "modified" {
-			if a.ModifiedAt == nil || b.ModifiedAt == nil {
-				if (a.ModifiedAt == nil) != (b.ModifiedAt == nil) {
-					return b.ModifiedAt == nil // nulls last in either direction
+		if sortBy == "modified" || sortBy == "created" {
+			at, bt := a.ModifiedAt, b.ModifiedAt
+			if sortBy == "created" {
+				at, bt = a.FileCreatedAt, b.FileCreatedAt
+			}
+			if at == nil || bt == nil {
+				if (at == nil) != (bt == nil) {
+					return bt == nil // nulls last in either direction
 				}
-			} else if !a.ModifiedAt.Equal(*b.ModifiedAt) {
+			} else if !at.Equal(*bt) {
 				if order == "desc" {
-					return a.ModifiedAt.After(*b.ModifiedAt)
+					return at.After(*bt)
 				}
-				return a.ModifiedAt.Before(*b.ModifiedAt)
+				return at.Before(*bt)
 			}
 		}
 		an, bn := strings.ToLower(a.Name), strings.ToLower(b.Name)

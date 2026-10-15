@@ -13,16 +13,17 @@ import (
 )
 
 type resourceResp struct {
-	ID         int64      `json:"id"`
-	RootID     int64      `json:"root_id"`
-	Path       string     `json:"path"`
-	Name       string     `json:"name"`
-	Size       int64      `json:"size"`
-	IsDir      bool       `json:"is_dir"`
-	ModifiedAt *time.Time `json:"modified_at"`
-	State      string     `json:"state"`
-	Kind       string     `json:"kind"`
-	Tags       []string   `json:"tags"`
+	ID            int64      `json:"id"`
+	RootID        int64      `json:"root_id"`
+	Path          string     `json:"path"`
+	Name          string     `json:"name"`
+	Size          int64      `json:"size"`
+	IsDir         bool       `json:"is_dir"`
+	ModifiedAt    *time.Time `json:"modified_at"`
+	FileCreatedAt *time.Time `json:"file_created_at"`
+	State         string     `json:"state"`
+	Kind          string     `json:"kind"`
+	Tags          []string   `json:"tags"`
 }
 
 type rootResp struct {

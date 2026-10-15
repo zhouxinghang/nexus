@@ -265,17 +265,18 @@ type MetricSample struct {
 }
 
 type Resource struct {
-	ID         int64         `json:"id"`
-	RootID     int64         `json:"root_id"`
-	Path       string        `json:"path"`
-	Name       string        `json:"name"`
-	Size       int64         `json:"size"`
-	IsDir      bool          `json:"is_dir"`
-	ModifiedAt *time.Time    `json:"modified_at"`
-	State      ResourceState `json:"state"`
-	CreatedAt  time.Time     `json:"created_at"`
-	UpdatedAt  time.Time     `json:"updated_at"`
-	Kind       string        `json:"kind"`
+	ID            int64         `json:"id"`
+	RootID        int64         `json:"root_id"`
+	Path          string        `json:"path"`
+	Name          string        `json:"name"`
+	Size          int64         `json:"size"`
+	IsDir         bool          `json:"is_dir"`
+	ModifiedAt    *time.Time    `json:"modified_at"`
+	State         ResourceState `json:"state"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+	Kind          string        `json:"kind"`
+	FileCreatedAt *time.Time    `json:"file_created_at"`
 }
 
 type ResourceTag struct {

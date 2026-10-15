@@ -1,7 +1,5 @@
-// Package checker runs the background health checker that periodically probes
-// each Bookmark's URL and records whether the site is reachable. It mirrors the
-// Servers sampler: a long-running goroutine on a fixed interval, plus exported
-// methods so the HTTP seam can drive a check synchronously in tests.
+// Package checker fetches Bookmark metadata and checks site reachability on
+// demand.
 package checker
 
 import (
@@ -13,9 +11,6 @@ import (
 
 	"nexus/internal/db/dbgen"
 )
-
-// Interval is how often every Bookmark is health-checked.
-const Interval = 5 * time.Minute
 
 // probeTimeout bounds a single HTTP probe so one slow site can't stall the run.
 const probeTimeout = 10 * time.Second
@@ -106,8 +101,7 @@ func (c *Checker) CheckOne(ctx context.Context, b dbgen.Bookmark) (dbgen.Bookmar
 	return c.queries.RecordBookmarkCheck(ctx, params)
 }
 
-// CheckAll probes every Bookmark once. Exposed so the HTTP seam and tests can
-// run a full sweep on demand without waiting for the ticker.
+// CheckAll probes every Bookmark once on demand.
 func (c *Checker) CheckAll(ctx context.Context) error {
 	bookmarks, err := c.queries.ListBookmarks(ctx)
 	if err != nil {
@@ -119,22 +113,4 @@ func (c *Checker) CheckAll(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// Run blocks, checking every Bookmark on each Interval tick until the context
-// is cancelled. Intended to be launched in a goroutine on startup. It checks
-// once immediately so freshly added Nexus instances get health promptly.
-func (c *Checker) Run(ctx context.Context) {
-	_ = c.CheckAll(ctx)
-
-	ticker := time.NewTicker(Interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_ = c.CheckAll(ctx)
-		}
-	}
 }

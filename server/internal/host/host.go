@@ -20,11 +20,12 @@ var ErrDockerUnavailable = errors.New("docker is not available")
 
 // FileInfo describes a single filesystem entry within a Managed Root.
 type FileInfo struct {
-	Path       string    `json:"path"` // absolute path on the Host
-	Name       string    `json:"name"`
-	Size       int64     `json:"size"`
-	IsDir      bool      `json:"is_dir"`
-	ModifiedAt time.Time `json:"modified_at"`
+	Path       string     `json:"path"` // absolute path on the Host
+	Name       string     `json:"name"`
+	Size       int64      `json:"size"`
+	IsDir      bool       `json:"is_dir"`
+	ModifiedAt time.Time  `json:"modified_at"`
+	CreatedAt  *time.Time `json:"created_at"` // filesystem birth time; nil if unavailable
 }
 
 // Process is one entry in the top-N process list.
@@ -177,9 +178,10 @@ type FS interface {
 	Stat(path string) (FileInfo, error)
 	// List returns the direct children of a directory (non-recursive).
 	List(dir string) ([]FileInfo, error)
-	// ListWithinRoot returns direct directories with traversal confined to root.
+	// ListWithinRoot returns non-hidden direct directories, confined to root.
 	ListWithinRoot(root, path string) ([]FileInfo, error)
-	// Walk returns every regular file beneath root (recursive).
+	// Walk returns files beneath root, excluding dot-prefixed entries and
+	// entire dot-prefixed directory subtrees.
 	Walk(root string) ([]FileInfo, error)
 	// Open opens a file's contents for reading/download.
 	Open(path string) (io.ReadCloser, error)

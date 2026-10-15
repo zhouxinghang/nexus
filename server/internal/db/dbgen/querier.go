@@ -25,6 +25,7 @@ type Querier interface {
 	// (the FileBrowser-Quantum "batch the index writes" idea, over Postgres). The
 	// arrays are positionally aligned and zipped back together by ordinality:
 	// paths[i] carries names[i], sizes[i], etc.
+	// A separate presence array carries nullable times without sentinel timestamps.
 	BulkUpsertResources(ctx context.Context, arg BulkUpsertResourcesParams) error
 	// The total for the same filter set as ListResourcesPage.
 	CountResources(ctx context.Context, arg CountResourcesParams) (int64, error)

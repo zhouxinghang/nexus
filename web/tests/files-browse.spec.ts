@@ -3,15 +3,15 @@ import { test, expect, type Page } from "@playwright/test";
 async function setup(page: Page, options: { many?: boolean; mixed?: boolean; slowSort?: boolean; fail?: boolean } = {}) {
   const requests: URL[] = [];
   const dirs = [
-    { path: "/managed/projects", name: "projects", modified_at: "2026-10-14T12:00:00Z", state: "present" },
-    { path: "/managed/projects/design", name: "design", modified_at: "2026-10-13T12:00:00Z", state: "present" },
-    { path: "/managed/empty", name: "empty", modified_at: "2026-10-12T12:00:00Z", state: "present" },
-    { path: "/managed/old", name: "old", modified_at: null, state: "missing" },
+    { path: "/managed/projects", name: "projects", modified_at: "2026-10-14T12:00:00Z", file_created_at: "2026-10-11T12:00:00Z", state: "present" },
+    { path: "/managed/projects/design", name: "design", modified_at: "2026-10-13T12:00:00Z", file_created_at: "2026-10-11T12:00:00Z", state: "present" },
+    { path: "/managed/empty", name: "empty", modified_at: "2026-10-12T12:00:00Z", file_created_at: "2026-10-12T12:00:00Z", state: "present" },
+    { path: "/managed/old", name: "old", modified_at: null, file_created_at: null, state: "missing" },
   ];
   const files = [
-    { id: 1, root_id: 1, path: "/managed/a.txt", size: 300, modified_at: "2026-10-12T12:00:00Z" },
-    { id: 2, root_id: 1, path: "/managed/b.txt", size: 100, modified_at: "2026-10-14T12:00:00Z" },
-    { id: 3, root_id: 1, path: "/managed/c.txt", size: 200, modified_at: "2026-10-13T12:00:00Z" },
+    { id: 1, root_id: 1, path: "/managed/a.txt", size: 300, modified_at: "2026-10-12T12:00:00Z", file_created_at: "2026-10-13T12:00:00Z" },
+    { id: 2, root_id: 1, path: "/managed/b.txt", size: 100, modified_at: "2026-10-14T12:00:00Z", file_created_at: "2026-10-11T12:00:00Z" },
+    { id: 3, root_id: 1, path: "/managed/c.txt", size: 200, modified_at: "2026-10-13T12:00:00Z", file_created_at: null },
     { id: 4, root_id: 1, path: "/managed/projects/readme.txt", size: 50, modified_at: "2026-10-14T12:00:00Z" },
     { id: 5, root_id: 1, path: "/managed/projects/design/mockup.txt", size: 40, modified_at: "2026-10-14T12:00:00Z" },
     { id: 6, root_id: 1, path: "/managed/old/missing.txt", size: 10, modified_at: "2026-10-10T12:00:00Z", state: "missing", tags: ["keep"] },
@@ -24,7 +24,7 @@ async function setup(page: Page, options: { many?: boolean; mixed?: boolean; slo
       id: 100 + i, root_id: 1, path: `/managed/file-${String(i).padStart(3, "0")}.txt`,
       size: 1000 + i, modified_at: "2026-10-14T12:00:00Z",
     })) : []),
-  ].map((f) => ({ name: f.path.split("/").at(-1)!, is_dir: false, kind: "document", state: "present", tags: [] as string[], ...f }));
+  ].map((f) => ({ name: f.path.split("/").at(-1)!, is_dir: false, kind: "document", state: "present", file_created_at: null as string | null, tags: [] as string[], ...f }));
   let failed = false;
   await page.route("**/api/**", async (route) => {
     const req = route.request();
@@ -55,8 +55,12 @@ async function setup(page: Page, options: { many?: boolean; mixed?: boolean; slo
       const kind = url.searchParams.get("kind");
       if (kind) items = items.filter((item) => item.kind === kind);
       items.sort((a, b) => {
+        if (sort === "created" && (!a.file_created_at || !b.file_created_at)) {
+          return a.file_created_at ? -1 : b.file_created_at ? 1 : a.path.localeCompare(b.path);
+        }
         const diff = sort === "size" ? a.size - b.size
           : sort === "modified" ? Date.parse(a.modified_at) - Date.parse(b.modified_at)
+          : sort === "created" ? Date.parse(a.file_created_at!) - Date.parse(b.file_created_at!)
           : a.name.localeCompare(b.name);
         return diff * order || a.path.localeCompare(b.path);
       });
@@ -159,6 +163,43 @@ test("Size and Modified headers sort in both directions with correct aria-sort",
   await page.reload();
   await expect(fileNames(page)).toHaveText(["a.txt", "c.txt", "b.txt"]);
   await expect(modified).toHaveAttribute("aria-sort", "ascending");
+});
+
+test("Created sorts actual file creation times, keeps unknowns last, and restores URL state", async ({ page }) => {
+  const requests = await setup(page);
+  const created = page.getByRole("columnheader", { name: "Created", exact: true });
+  await created.getByRole("button").focus();
+  await page.keyboard.press("Enter");
+  await expect(created).toHaveAttribute("aria-sort", "descending");
+  await expect(fileNames(page)).toHaveText(["a.txt", "b.txt", "c.txt"]);
+  expect(requests.at(-1)!.searchParams.get("sort")).toBe("created");
+  await created.getByRole("button").click();
+  await expect(created).toHaveAttribute("aria-sort", "ascending");
+  await expect(fileNames(page)).toHaveText(["b.txt", "a.txt", "c.txt"]);
+  await expect(page).toHaveURL(/sort=created/);
+  await page.reload();
+  await expect(created).toHaveAttribute("aria-sort", "ascending");
+  await expect(fileNames(page)).toHaveText(["b.txt", "a.txt", "c.txt"]);
+  await page.screenshot({ path: test.info().outputPath("files-created-desktop.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "By type", exact: true }).click();
+  await expect(fileNames(page).first()).toHaveText("b.txt");
+  await expect(created).toHaveAttribute("aria-sort", "ascending");
+});
+
+test("mobile Created sorting is accessible without horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
+  await setup(page);
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  await page.getByRole("combobox", { name: "Sort by" }).selectOption("created");
+  await expect(fileNames(page)).toHaveText(["a.txt", "b.txt", "c.txt"]);
+  await page.getByRole("button", { name: "Sort ascending" }).click();
+  await expect(fileNames(page)).toHaveText(["b.txt", "a.txt", "c.txt"]);
+  await page.getByText("a.txt", { exact: true }).click();
+  await page.getByRole("button", { name: "Show file details" }).click();
+  await expect(page.getByRole("region", { name: "File details" }).getByText("Created on Host")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("files-created-mobile-dark.png") });
 });
 
 test("folder mode loads every child in one unpaged request and clears batch selection on navigation", async ({ page }) => {

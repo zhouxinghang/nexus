@@ -124,6 +124,31 @@
   }
 }
 
+/* Optional Files columns respond to the table's space, not the viewport:
+ * the details panel can narrow the table even on a wide desktop. */
+.files-table-container {
+  container-type: inline-size;
+}
+
+.files-modified-column,
+.files-created-column,
+.files-tags-column {
+  display: none;
+}
+
+@container (min-width: 36rem) {
+  .files-modified-column,
+  .files-tags-column {
+    display: table-cell;
+  }
+}
+
+@container (min-width: 44rem) {
+  .files-created-column {
+    display: table-cell;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

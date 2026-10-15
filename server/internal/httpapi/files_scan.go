@@ -231,7 +231,7 @@ func (s *Server) runScan(ctx context.Context, root dbgen.ManagedRoot) error {
 	}
 	s.scans.update(root.ID, time.Now(), func(st *scanState) { st.Total = len(files) })
 
-	// Load the index's current (size, modtime) for this root once, so a rescan
+	// Load the index's current metadata for this root once, so a rescan
 	// only writes the files that are new or actually changed — a modtime-based
 	// "quick scan" rather than re-upserting every row every time.
 	digestRows, err := s.queries.ListResourceDigestByRoot(ctx, root.ID)
@@ -240,7 +240,7 @@ func (s *Server) runScan(ctx context.Context, root dbgen.ManagedRoot) error {
 	}
 	known := make(map[string]fileDigest, len(digestRows))
 	for _, d := range digestRows {
-		known[d.Path] = fileDigest{size: d.Size, mod: d.ModifiedAt}
+		known[d.Path] = fileDigest{size: d.Size, mod: d.ModifiedAt, created: d.FileCreatedAt}
 	}
 
 	// Collect the paths seen on disk (for reconciliation) and upsert the subset
@@ -295,8 +295,9 @@ func (s *Server) runScan(ctx context.Context, root dbgen.ManagedRoot) error {
 // fileDigest is the subset of an indexed Resource a rescan compares against the
 // live file to decide whether anything changed.
 type fileDigest struct {
-	size int64
-	mod  *time.Time
+	size    int64
+	mod     *time.Time
+	created *time.Time
 }
 
 // unchanged reports whether f matches this digest in size and modification
@@ -308,6 +309,11 @@ func (d fileDigest) unchanged(f host.FileInfo) bool {
 		return false
 	}
 	if d.mod == nil {
+		return false
+	}
+	// Fill creation times for legacy rows even when size/mtime are unchanged.
+	// An unavailable observation does not erase an earlier known birth time.
+	if f.CreatedAt != nil && (d.created == nil || !d.created.Equal(f.CreatedAt.Truncate(time.Microsecond))) {
 		return false
 	}
 	return d.mod.Equal(f.ModifiedAt.Truncate(time.Microsecond))
@@ -328,4 +334,10 @@ func appendToBatch(b *dbgen.BulkUpsertResourcesParams, f host.FileInfo) {
 	b.Sizes = append(b.Sizes, f.Size)
 	b.IsDirs = append(b.IsDirs, f.IsDir)
 	b.ModifiedAts = append(b.ModifiedAts, mod)
+	created := time.Time{}
+	if f.CreatedAt != nil {
+		created = f.CreatedAt.Truncate(time.Microsecond)
+	}
+	b.FileCreatedAts = append(b.FileCreatedAts, created)
+	b.FileCreatedKnown = append(b.FileCreatedKnown, f.CreatedAt != nil)
 }

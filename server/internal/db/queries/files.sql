@@ -14,14 +14,15 @@ SELECT * FROM managed_roots WHERE id = $1;
 DELETE FROM managed_roots WHERE id = $1;
 
 -- name: UpsertResource :one
-INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, state, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, 'present', now())
+INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, file_created_at, state, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'present', now())
 ON CONFLICT (path) DO UPDATE
 SET root_id     = EXCLUDED.root_id,
     name        = EXCLUDED.name,
     size        = EXCLUDED.size,
     is_dir      = EXCLUDED.is_dir,
     modified_at = EXCLUDED.modified_at,
+    file_created_at = COALESCE(EXCLUDED.file_created_at, resources.file_created_at),
     state       = 'present',
     updated_at  = now()
 RETURNING *;
@@ -33,19 +34,24 @@ RETURNING *;
 -- (the FileBrowser-Quantum "batch the index writes" idea, over Postgres). The
 -- arrays are positionally aligned and zipped back together by ordinality:
 -- paths[i] carries names[i], sizes[i], etc.
-INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, state, updated_at)
-SELECT sqlc.arg(root_id)::bigint, p.path, n.name, s.size, d.is_dir, m.modified_at, 'present', now()
+INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, file_created_at, state, updated_at)
+SELECT sqlc.arg(root_id)::bigint, p.path, n.name, s.size, d.is_dir, m.modified_at,
+       CASE WHEN k.known THEN c.created_at END, 'present', now()
 FROM unnest(sqlc.arg(paths)::text[]) WITH ORDINALITY AS p(path, i)
 JOIN unnest(sqlc.arg(names)::text[]) WITH ORDINALITY AS n(name, i) USING (i)
 JOIN unnest(sqlc.arg(sizes)::bigint[]) WITH ORDINALITY AS s(size, i) USING (i)
 JOIN unnest(sqlc.arg(is_dirs)::boolean[]) WITH ORDINALITY AS d(is_dir, i) USING (i)
 JOIN unnest(sqlc.arg(modified_ats)::timestamptz[]) WITH ORDINALITY AS m(modified_at, i) USING (i)
+-- A separate presence array carries nullable times without sentinel timestamps.
+JOIN unnest(sqlc.arg(file_created_ats)::timestamptz[]) WITH ORDINALITY AS c(created_at, i) USING (i)
+JOIN unnest(sqlc.arg(file_created_known)::boolean[]) WITH ORDINALITY AS k(known, i) USING (i)
 ON CONFLICT (path) DO UPDATE
 SET root_id     = EXCLUDED.root_id,
     name        = EXCLUDED.name,
     size        = EXCLUDED.size,
     is_dir      = EXCLUDED.is_dir,
     modified_at = EXCLUDED.modified_at,
+    file_created_at = COALESCE(EXCLUDED.file_created_at, resources.file_created_at),
     state       = 'present',
     updated_at  = now();
 
@@ -65,7 +71,7 @@ WHERE root_id = sqlc.arg(root_id)::bigint
 -- The present Resources' change-detection digest for a root. A scan loads these
 -- once, then skips re-upserting any file whose size and modified_at are
 -- unchanged — the modtime-based "quick scan" that makes rescans cheap.
-SELECT path, size, modified_at FROM resources
+SELECT path, size, modified_at, file_created_at FROM resources
 WHERE root_id = $1 AND state = 'present';
 
 -- name: GetResource :one
@@ -102,6 +108,8 @@ ORDER BY r.is_dir DESC,
   CASE WHEN sqlc.arg(sort_by)::text = 'size' AND sqlc.arg(sort_order)::text = 'desc' THEN r.size END DESC,
   CASE WHEN sqlc.arg(sort_by)::text = 'modified' AND sqlc.arg(sort_order)::text = 'asc' THEN r.modified_at END ASC NULLS LAST,
   CASE WHEN sqlc.arg(sort_by)::text = 'modified' AND sqlc.arg(sort_order)::text = 'desc' THEN r.modified_at END DESC NULLS LAST,
+  CASE WHEN sqlc.arg(sort_by)::text = 'created' AND sqlc.arg(sort_order)::text = 'asc' THEN r.file_created_at END ASC NULLS LAST,
+  CASE WHEN sqlc.arg(sort_by)::text = 'created' AND sqlc.arg(sort_order)::text = 'desc' THEN r.file_created_at END DESC NULLS LAST,
   r.path ASC
 -- Zero is reserved for the complete, direct-child folder view.
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0) OFFSET sqlc.arg(page_offset);

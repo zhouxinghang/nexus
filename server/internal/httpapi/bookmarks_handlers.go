@@ -15,10 +15,9 @@ import (
 	"nexus/internal/db/dbgen"
 )
 
-// contextWithCheckTimeout bounds the fire-and-forget health check and
-// metadata fetch kicked off when a Bookmark is created, so they can't outlive
-// a reasonable window even if the request context is already gone.
-func contextWithCheckTimeout() (context.Context, context.CancelFunc) {
+// contextWithMetaFetchTimeout bounds a fire-and-forget metadata fetch so it
+// can't outlive a reasonable window even if the request context is already gone.
+func contextWithMetaFetchTimeout() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 15*time.Second)
 }
 
@@ -167,17 +166,15 @@ func (s *Server) handleCreateBookmark(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Kick off a health check (and, if not already done, the metadata fetch)
-	// immediately so the new Bookmark fills in without waiting for the next
-	// ticker, but don't block the response on them.
-	s.goBackground(func() {
-		ctx, cancel := contextWithCheckTimeout()
-		defer cancel()
-		_, _ = s.checker.CheckOne(ctx, b)
-		if meta == nil {
+	// Fetch metadata if not already done, without blocking the response.
+	// Health stays unknown until the Owner explicitly requests a check.
+	if meta == nil {
+		s.goBackground(func() {
+			ctx, cancel := contextWithMetaFetchTimeout()
+			defer cancel()
 			s.fetchAndRecordMeta(ctx, b)
-		}
-	})
+		})
+	}
 
 	writeJSON(w, http.StatusCreated, toBookmarkResponse(b))
 }
@@ -282,7 +279,7 @@ func (s *Server) handleUpdateBookmark(w http.ResponseWriter, r *http.Request) {
 	// A new link means the fetched title/favicon describe the old site.
 	if b.Url != existing.Url {
 		s.goBackground(func() {
-			ctx, cancel := contextWithCheckTimeout()
+			ctx, cancel := contextWithMetaFetchTimeout()
 			defer cancel()
 			s.fetchAndRecordMeta(ctx, b)
 		})

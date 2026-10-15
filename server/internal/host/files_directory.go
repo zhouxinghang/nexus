@@ -37,7 +37,7 @@ func listWithinRoot(rootPath, path string) ([]FileInfo, error) {
 	for _, entry := range entries {
 		// Symlinks are not directory navigation targets (Scan doesn't follow
 		// them either). This also prevents outside-root directory disclosure.
-		if !entry.IsDir() {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		fi, err := entry.Info()

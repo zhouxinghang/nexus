@@ -116,7 +116,7 @@ and it keeps the Files module local-only (see ADR-0002, ADR-0005).
 _Avoid_: link, favorite, shortcut, resource
 
 **Health** (bookmark state):
-The reachability of a Bookmark's site, recorded by a periodic health check:
+The reachability of a Bookmark's site as of its last manual health check:
 `up` (last probe got an HTTP status below 500), `down` (the probe failed or
 returned 5xx), or `unknown` (never checked yet). Each check also stores the last
 status code, latency, and check time.

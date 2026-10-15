@@ -54,6 +54,7 @@ type Resource = {
   size: number;
   is_dir: boolean;
   modified_at: string | null;
+  file_created_at: string | null;
   state: "present" | "missing";
   kind: FileKind;
   tags: string[];
@@ -63,9 +64,10 @@ type Directory = {
   path: string;
   name: string;
   modified_at: string | null;
+  file_created_at: string | null;
   state: "present" | "missing";
 };
-type SortBy = "name" | "size" | "modified";
+type SortBy = "name" | "size" | "modified" | "created";
 type SortOrder = "asc" | "desc";
 type BrowseMode = "folder" | "type";
 
@@ -108,9 +110,9 @@ function bytes(n: number): string {
   return `${v.toFixed(0)} ${units[i]}`;
 }
 
-// A compact, human modified-date: time today, "Yesterday", a weekday this week,
+// A compact file date: time today, "Yesterday", a weekday this week,
 // "Mon D" this year, else "Mon D, YYYY" — so the column scans at a glance.
-function modified(iso: string | null): string {
+function fileDate(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   const now = new Date();
@@ -198,7 +200,7 @@ export default function Files() {
   const currentRoot = roots.find((r) => r.id === rootFilter);
   const currentDir = searchParams.get("dir") || currentRoot?.path || "";
   const sortParam = searchParams.get("sort");
-  const sortBy: SortBy = sortParam === "size" || sortParam === "modified" ? sortParam : "name";
+  const sortBy: SortBy = sortParam === "size" || sortParam === "modified" || sortParam === "created" ? sortParam : "name";
   const sortOrder: SortOrder = searchParams.get("order") === "desc" ? "desc" : "asc";
   const tagFilter = searchParams.get("tag") || "";
   const kindParam = searchParams.get("kind");
@@ -789,10 +791,10 @@ export default function Files() {
                 </>
               )}
               <div className="ml-auto flex items-center gap-1">
-                <Select aria-label="Sort by" className="w-auto md:hidden" value={sortBy} onChange={(e) => setQuery({ sort: e.target.value, order: e.target.value === "name" ? "asc" : "desc" })}>
-                  <option value="name">Name</option><option value="size">Size</option><option value="modified">Modified</option>
+                <Select aria-label="Sort by" className="w-auto" value={sortBy} onChange={(e) => setQuery({ sort: e.target.value, order: e.target.value === "name" ? "asc" : "desc" })}>
+                  <option value="name">Name</option><option value="size">Size</option><option value="modified">Modified</option><option value="created">Created</option>
                 </Select>
-                <Button size="icon" variant="ghost" className="md:hidden" aria-label={`Sort ${sortOrder === "asc" ? "descending" : "ascending"}`} onClick={() => changeSort(sortBy)}>{sortOrder === "asc" ? <ArrowUp size={15} aria-hidden /> : <ArrowDown size={15} aria-hidden />}</Button>
+                <Button size="icon" variant="ghost" aria-label={`Sort ${sortOrder === "asc" ? "descending" : "ascending"}`} onClick={() => changeSort(sortBy)}>{sortOrder === "asc" ? <ArrowUp size={15} aria-hidden /> : <ArrowDown size={15} aria-hidden />}</Button>
                 <Button size="icon" variant="ghost" aria-label="Refresh files" disabled={loading} onClick={() => loadResources()}><RefreshCw size={15} aria-hidden /></Button>
                 <Button size="icon" variant={showDetail ? "subtle" : "ghost"} aria-label="Show file details" title="File details" aria-expanded={showDetail && !!selected} disabled={!selected} onClick={() => setShowDetail(!showDetail)}><Info size={16} aria-hidden /></Button>
               </div>
@@ -832,7 +834,7 @@ export default function Files() {
                 ) : resources.length === 0 && directories.length === 0 ? (
                   <EmptyState icon={mode === "folder" ? Folder : Search} title={mode === "folder" ? "Empty directory" : "No matches"} description={mode === "folder" ? "Scan the Managed Root to include new files." : hasFilters ? "Try a different filter or clear the current filters." : "Scan a Managed Root to index Resources."} className="m-4" action={mode === "type" && hasFilters ? <Button size="sm" variant="outline" onClick={clearFilters}>Clear filters</Button> : undefined} />
                 ) : (
-                  <div ref={tableRef} onKeyDown={onTableKeyDown} className="max-h-[65vh] overflow-auto">
+                  <div ref={tableRef} onKeyDown={onTableKeyDown} className="files-table-container max-h-[65vh] overflow-auto">
                     <table aria-label={mode === "folder" ? "Directory contents" : "Resources by type"} className="w-full table-fixed border-separate border-spacing-0 text-sm">
                       <thead>
                         <tr className="text-left text-xs text-muted-foreground">
@@ -843,15 +845,16 @@ export default function Files() {
                           </th>
                           <th aria-sort={sortBy === "name" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"} className="sticky top-0 z-10 border-b border-border bg-card px-3 py-2 font-medium"><SortHeader label="Name" sortKey="name" sortBy={sortBy} order={sortOrder} onSort={changeSort} /></th>
                           <th aria-sort={sortBy === "size" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"} className="sticky top-0 z-10 w-20 border-b border-border bg-card px-3 py-2 text-right font-medium"><SortHeader label="Size" sortKey="size" sortBy={sortBy} order={sortOrder} onSort={changeSort} /></th>
-                          <th aria-sort={sortBy === "modified" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"} className="sticky top-0 z-10 hidden w-28 border-b border-border bg-card px-3 py-2 font-medium sm:table-cell"><SortHeader label="Modified" sortKey="modified" sortBy={sortBy} order={sortOrder} onSort={changeSort} /></th>
-                          <th className="sticky top-0 z-10 hidden w-[20%] border-b border-border bg-card px-3 py-2 font-medium sm:table-cell">Tags</th>
+                          <th aria-sort={sortBy === "modified" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"} className="files-modified-column sticky top-0 z-10 w-28 border-b border-border bg-card px-3 py-2 font-medium"><SortHeader label="Modified" sortKey="modified" sortBy={sortBy} order={sortOrder} onSort={changeSort} /></th>
+                          <th aria-sort={sortBy === "created" ? (sortOrder === "asc" ? "ascending" : "descending") : "none"} className="files-created-column sticky top-0 z-10 w-28 border-b border-border bg-card px-3 py-2 font-medium"><SortHeader label="Created" sortKey="created" sortBy={sortBy} order={sortOrder} onSort={changeSort} /></th>
+                          <th className="files-tags-column sticky top-0 z-10 w-[20%] border-b border-border bg-card px-3 py-2 font-medium">Tags</th>
                         </tr>
                       </thead>
                       <tbody>
                         {visibleDirectories.map((dir) => <DirectoryRow key={dir.path} directory={dir} selected={activeDirectory === dir.path} onSelect={() => { setActiveDirectory(dir.path); setSelected(null); clearChecked(); }} onOpen={() => browse(currentRoot!.id, dir.path)} />)}
                         {groups.map((group) => (
                           <Fragment key={group.kind?.key || "all"}>
-                            {group.kind && <tr><th scope="rowgroup" colSpan={5} className="border-b border-border bg-muted/30 px-3 py-2 text-left text-xs font-medium text-muted-foreground">{group.kind.label}<span className="ml-2 font-normal">{group.items.length} on this page</span></th></tr>}
+                            {group.kind && <tr><th scope="rowgroup" colSpan={6} className="border-b border-border bg-muted/30 px-3 py-2 text-left text-xs font-medium text-muted-foreground">{group.kind.label}<span className="ml-2 font-normal">{group.items.length} on this page</span></th></tr>}
                             {group.items.map((resource) => <ResourceRow key={resource.id} resource={resource} selected={selected?.id === resource.id} checked={checked.has(resource.id)} showPath={mode === "type"} onToggleCheck={toggleChecked} onSelect={selectResource} onPreview={setPreviewing} onOpenDirectory={(r) => { if (mode === "type") { setSearchParams({ mode: "folder", root: String(r.root_id), dir: r.path }); } else browse(r.root_id, r.path); }} />)}
                           </Fragment>
                         ))}
@@ -1036,8 +1039,9 @@ function DirectoryRow({ directory, selected, onSelect, onOpen }: {
         </button>
       </td>
       <td className="border-b border-border/60 px-4 py-2.5 text-right text-muted-foreground">—</td>
-      <td title={directory.modified_at ? new Date(directory.modified_at).toLocaleString() : undefined} className="hidden truncate border-b border-border/60 px-4 py-2.5 text-muted-foreground sm:table-cell">{modified(directory.modified_at)}</td>
-      <td className="hidden border-b border-border/60 px-4 py-2.5 text-xs text-muted-foreground sm:table-cell">Folder</td>
+      <td title={directory.modified_at ? new Date(directory.modified_at).toLocaleString() : undefined} className="files-modified-column truncate border-b border-border/60 px-4 py-2.5 text-muted-foreground">{fileDate(directory.modified_at)}</td>
+      <td title={directory.file_created_at ? new Date(directory.file_created_at).toLocaleString() : "File creation time unavailable"} className="files-created-column truncate border-b border-border/60 px-4 py-2.5 tabular-nums text-muted-foreground">{fileDate(directory.file_created_at)}</td>
+      <td className="files-tags-column border-b border-border/60 px-4 py-2.5 text-xs text-muted-foreground">Folder</td>
     </tr>
   );
 }
@@ -1177,10 +1181,13 @@ function ResourceRow({
       <td className="whitespace-nowrap border-b border-border/60 px-4 py-2.5 text-right tabular-nums text-muted-foreground">
         {resource.is_dir ? "—" : bytes(resource.size)}
       </td>
-      <td title={resource.modified_at ? new Date(resource.modified_at).toLocaleString() : undefined} className="hidden truncate border-b border-border/60 px-4 py-2.5 tabular-nums text-muted-foreground sm:table-cell">
-        {modified(resource.modified_at)}
+      <td title={resource.modified_at ? new Date(resource.modified_at).toLocaleString() : undefined} className="files-modified-column truncate border-b border-border/60 px-4 py-2.5 tabular-nums text-muted-foreground">
+        {fileDate(resource.modified_at)}
       </td>
-      <td className="hidden border-b border-border/60 px-4 py-2.5 sm:table-cell">
+      <td title={resource.file_created_at ? new Date(resource.file_created_at).toLocaleString() : "File creation time unavailable"} className="files-created-column truncate border-b border-border/60 px-4 py-2.5 tabular-nums text-muted-foreground">
+        {fileDate(resource.file_created_at)}
+      </td>
+      <td className="files-tags-column border-b border-border/60 px-4 py-2.5">
         <div className="flex flex-wrap gap-1">
           {resource.tags.map((t) => (
             <Badge key={t} variant="primary" className="max-w-full" title={t}>
@@ -1241,6 +1248,10 @@ function Detail({
       <div className="break-all rounded-md bg-muted/50 p-2 font-mono text-xs text-muted-foreground">
         {resource.path}
       </div>
+      <dl className="space-y-1 text-xs">
+        <dt className="font-medium text-muted-foreground">Created on Host</dt>
+        <dd>{resource.file_created_at ? <time dateTime={resource.file_created_at}>{new Date(resource.file_created_at).toLocaleString()}</time> : "Unavailable — scan the Managed Root to refresh metadata."}</dd>
+      </dl>
 
       <div className="space-y-1.5">
         <label htmlFor="resource-tag" className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

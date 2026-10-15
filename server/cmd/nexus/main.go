@@ -56,9 +56,6 @@ func main() {
 	// Start the background sampler.
 	go srv.Sampler().Run(ctx)
 
-	// Start the background bookmark health checker.
-	go srv.Checker().Run(ctx)
-
 	handler := srv.Router(web.Handler())
 
 	httpServer := &http.Server{

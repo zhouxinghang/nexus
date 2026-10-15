@@ -46,30 +46,36 @@ func (q *Queries) AddTagToResources(ctx context.Context, arg AddTagToResourcesPa
 }
 
 const bulkUpsertResources = `-- name: BulkUpsertResources :exec
-INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, state, updated_at)
-SELECT $1::bigint, p.path, n.name, s.size, d.is_dir, m.modified_at, 'present', now()
+INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, file_created_at, state, updated_at)
+SELECT $1::bigint, p.path, n.name, s.size, d.is_dir, m.modified_at,
+       CASE WHEN k.known THEN c.created_at END, 'present', now()
 FROM unnest($2::text[]) WITH ORDINALITY AS p(path, i)
 JOIN unnest($3::text[]) WITH ORDINALITY AS n(name, i) USING (i)
 JOIN unnest($4::bigint[]) WITH ORDINALITY AS s(size, i) USING (i)
 JOIN unnest($5::boolean[]) WITH ORDINALITY AS d(is_dir, i) USING (i)
 JOIN unnest($6::timestamptz[]) WITH ORDINALITY AS m(modified_at, i) USING (i)
+JOIN unnest($7::timestamptz[]) WITH ORDINALITY AS c(created_at, i) USING (i)
+JOIN unnest($8::boolean[]) WITH ORDINALITY AS k(known, i) USING (i)
 ON CONFLICT (path) DO UPDATE
 SET root_id     = EXCLUDED.root_id,
     name        = EXCLUDED.name,
     size        = EXCLUDED.size,
     is_dir      = EXCLUDED.is_dir,
     modified_at = EXCLUDED.modified_at,
+    file_created_at = COALESCE(EXCLUDED.file_created_at, resources.file_created_at),
     state       = 'present',
     updated_at  = now()
 `
 
 type BulkUpsertResourcesParams struct {
-	RootID      int64       `json:"root_id"`
-	Paths       []string    `json:"paths"`
-	Names       []string    `json:"names"`
-	Sizes       []int64     `json:"sizes"`
-	IsDirs      []bool      `json:"is_dirs"`
-	ModifiedAts []time.Time `json:"modified_ats"`
+	RootID           int64       `json:"root_id"`
+	Paths            []string    `json:"paths"`
+	Names            []string    `json:"names"`
+	Sizes            []int64     `json:"sizes"`
+	IsDirs           []bool      `json:"is_dirs"`
+	ModifiedAts      []time.Time `json:"modified_ats"`
+	FileCreatedAts   []time.Time `json:"file_created_ats"`
+	FileCreatedKnown []bool      `json:"file_created_known"`
 }
 
 // Upserts many Resources in a single round-trip from parallel arrays. A plain
@@ -78,6 +84,7 @@ type BulkUpsertResourcesParams struct {
 // (the FileBrowser-Quantum "batch the index writes" idea, over Postgres). The
 // arrays are positionally aligned and zipped back together by ordinality:
 // paths[i] carries names[i], sizes[i], etc.
+// A separate presence array carries nullable times without sentinel timestamps.
 func (q *Queries) BulkUpsertResources(ctx context.Context, arg BulkUpsertResourcesParams) error {
 	_, err := q.db.Exec(ctx, bulkUpsertResources,
 		arg.RootID,
@@ -86,6 +93,8 @@ func (q *Queries) BulkUpsertResources(ctx context.Context, arg BulkUpsertResourc
 		arg.Sizes,
 		arg.IsDirs,
 		arg.ModifiedAts,
+		arg.FileCreatedAts,
+		arg.FileCreatedKnown,
 	)
 	return err
 }
@@ -232,7 +241,7 @@ func (q *Queries) GetManagedRoot(ctx context.Context, id int64) (ManagedRoot, er
 }
 
 const getResource = `-- name: GetResource :one
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources WHERE id = $1
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind, file_created_at FROM resources WHERE id = $1
 `
 
 func (q *Queries) GetResource(ctx context.Context, id int64) (Resource, error) {
@@ -250,12 +259,13 @@ func (q *Queries) GetResource(ctx context.Context, id int64) (Resource, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,
+		&i.FileCreatedAt,
 	)
 	return i, err
 }
 
 const getResourceByPath = `-- name: GetResourceByPath :one
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources WHERE path = $1
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind, file_created_at FROM resources WHERE path = $1
 `
 
 func (q *Queries) GetResourceByPath(ctx context.Context, path string) (Resource, error) {
@@ -273,6 +283,7 @@ func (q *Queries) GetResourceByPath(ctx context.Context, path string) (Resource,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,
+		&i.FileCreatedAt,
 	)
 	return i, err
 }
@@ -367,14 +378,15 @@ func (q *Queries) ListManagedRoots(ctx context.Context) ([]ManagedRoot, error) {
 }
 
 const listResourceDigestByRoot = `-- name: ListResourceDigestByRoot :many
-SELECT path, size, modified_at FROM resources
+SELECT path, size, modified_at, file_created_at FROM resources
 WHERE root_id = $1 AND state = 'present'
 `
 
 type ListResourceDigestByRootRow struct {
-	Path       string     `json:"path"`
-	Size       int64      `json:"size"`
-	ModifiedAt *time.Time `json:"modified_at"`
+	Path          string     `json:"path"`
+	Size          int64      `json:"size"`
+	ModifiedAt    *time.Time `json:"modified_at"`
+	FileCreatedAt *time.Time `json:"file_created_at"`
 }
 
 // The present Resources' change-detection digest for a root. A scan loads these
@@ -389,7 +401,12 @@ func (q *Queries) ListResourceDigestByRoot(ctx context.Context, rootID int64) ([
 	items := []ListResourceDigestByRootRow{}
 	for rows.Next() {
 		var i ListResourceDigestByRootRow
-		if err := rows.Scan(&i.Path, &i.Size, &i.ModifiedAt); err != nil {
+		if err := rows.Scan(
+			&i.Path,
+			&i.Size,
+			&i.ModifiedAt,
+			&i.FileCreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -469,7 +486,7 @@ func (q *Queries) ListResourceIDsByRoot(ctx context.Context, rootID int64) ([]Li
 }
 
 const listResourcesByIDs = `-- name: ListResourcesByIDs :many
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind, file_created_at FROM resources
 WHERE id = ANY($1::bigint[])
 ORDER BY path ASC
 `
@@ -495,6 +512,7 @@ func (q *Queries) ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resour
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Kind,
+			&i.FileCreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -507,7 +525,7 @@ func (q *Queries) ListResourcesByIDs(ctx context.Context, ids []int64) ([]Resour
 }
 
 const listResourcesPage = `-- name: ListResourcesPage :many
-SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind FROM resources r
+SELECT id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind, file_created_at FROM resources r
 WHERE ($1::bigint IS NULL OR r.root_id = $1::bigint)
   AND ($2::text IS NULL OR r.path LIKE $2::text)
   AND ($3::text IS NULL OR r.path NOT LIKE $3::text)
@@ -523,6 +541,8 @@ ORDER BY r.is_dir DESC,
   CASE WHEN $7::text = 'size' AND $8::text = 'desc' THEN r.size END DESC,
   CASE WHEN $7::text = 'modified' AND $8::text = 'asc' THEN r.modified_at END ASC NULLS LAST,
   CASE WHEN $7::text = 'modified' AND $8::text = 'desc' THEN r.modified_at END DESC NULLS LAST,
+  CASE WHEN $7::text = 'created' AND $8::text = 'asc' THEN r.file_created_at END ASC NULLS LAST,
+  CASE WHEN $7::text = 'created' AND $8::text = 'desc' THEN r.file_created_at END DESC NULLS LAST,
   r.path ASC
 LIMIT NULLIF($10::int, 0) OFFSET $9
 `
@@ -579,6 +599,7 @@ func (q *Queries) ListResourcesPage(ctx context.Context, arg ListResourcesPagePa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Kind,
+			&i.FileCreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -713,7 +734,7 @@ const updateResourcePath = `-- name: UpdateResourcePath :one
 UPDATE resources
 SET path = $2, name = $3, root_id = $4, updated_at = now()
 WHERE id = $1
-RETURNING id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind
+RETURNING id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind, file_created_at
 `
 
 type UpdateResourcePathParams struct {
@@ -743,31 +764,34 @@ func (q *Queries) UpdateResourcePath(ctx context.Context, arg UpdateResourcePath
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,
+		&i.FileCreatedAt,
 	)
 	return i, err
 }
 
 const upsertResource = `-- name: UpsertResource :one
-INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, state, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, 'present', now())
+INSERT INTO resources (root_id, path, name, size, is_dir, modified_at, file_created_at, state, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'present', now())
 ON CONFLICT (path) DO UPDATE
 SET root_id     = EXCLUDED.root_id,
     name        = EXCLUDED.name,
     size        = EXCLUDED.size,
     is_dir      = EXCLUDED.is_dir,
     modified_at = EXCLUDED.modified_at,
+    file_created_at = COALESCE(EXCLUDED.file_created_at, resources.file_created_at),
     state       = 'present',
     updated_at  = now()
-RETURNING id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind
+RETURNING id, root_id, path, name, size, is_dir, modified_at, state, created_at, updated_at, kind, file_created_at
 `
 
 type UpsertResourceParams struct {
-	RootID     int64      `json:"root_id"`
-	Path       string     `json:"path"`
-	Name       string     `json:"name"`
-	Size       int64      `json:"size"`
-	IsDir      bool       `json:"is_dir"`
-	ModifiedAt *time.Time `json:"modified_at"`
+	RootID        int64      `json:"root_id"`
+	Path          string     `json:"path"`
+	Name          string     `json:"name"`
+	Size          int64      `json:"size"`
+	IsDir         bool       `json:"is_dir"`
+	ModifiedAt    *time.Time `json:"modified_at"`
+	FileCreatedAt *time.Time `json:"file_created_at"`
 }
 
 func (q *Queries) UpsertResource(ctx context.Context, arg UpsertResourceParams) (Resource, error) {
@@ -778,6 +802,7 @@ func (q *Queries) UpsertResource(ctx context.Context, arg UpsertResourceParams) 
 		arg.Size,
 		arg.IsDir,
 		arg.ModifiedAt,
+		arg.FileCreatedAt,
 	)
 	var i Resource
 	err := row.Scan(
@@ -792,6 +817,7 @@ func (q *Queries) UpsertResource(ctx context.Context, arg UpsertResourceParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Kind,
+		&i.FileCreatedAt,
 	)
 	return i, err
 }

@@ -176,10 +176,20 @@ selects without opening a detail panel; use the **File details** icon to manage
 tags, rename, move or delete. Ctrl/Cmd-click and Shift-click support multi/range
 selection. Double-click, Enter or Space previews a present Resource.
 
-The **Name**, **Size** and **Modified** headers sort in either direction. Sorting
+The **Name**, **Size**, **Modified** and **Created** headers sort in either direction. Sorting
 and filtering happen on the server before type-view pagination; folders remain
 above Resources in folder mode. Scan indexes new files; Missing Resources keep
 their tags and remain reachable until cleared.
+
+Scan skips dot-prefixed files and directory subtrees before indexing; single-file
+registration rejects them too. Hidden directories are omitted from navigation.
+This does not delete Host files or automatically clear existing Resource rows.
+
+**Created** uses the Host file's actual creation time, not its Resource's index
+time. Migration 19 adds nullable `file_created_at` metadata; rescan existing
+Managed Roots to fill it, even for files whose size and modified time are
+unchanged. Unavailable creation times display as `—` and sort last in both
+directions. Mobile exposes the same sorting through **Sort by**.
 
 Resource metadata is tags-only. Migration 17 permanently removes existing note
 text; it does not change tags or Host files.

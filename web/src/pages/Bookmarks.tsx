@@ -180,8 +180,7 @@ export default function Bookmarks() {
 
   useEffect(() => {
     load().finally(() => setLoading(false));
-    // Pick up health transitions (and fetched titles/favicons) produced in the
-    // background.
+    // Pick up fetched titles/favicons and manual checks requested elsewhere.
     pollTimer.current = setInterval(() => {
       load().catch(() => {});
     }, 60000);
@@ -271,7 +270,7 @@ export default function Bookmarks() {
       <PageHeader
         icon={Compass}
         title="Bookmarks"
-        description="A navigation board of your sites. Click a card to open it; Nexus checks each link's health periodically."
+        description="A navigation board of your sites. Click a card to open it; health checks run only when you choose Recheck health or Check all."
         actions={
           bookmarks.length > 0 ? (
             <>

@@ -33,7 +33,7 @@ func (s *Server) CheckBookmarksForTest(ctx context.Context) error {
 }
 
 // WaitBackgroundForTest blocks until every fire-and-forget task started by a
-// handler (create-time health checks, metadata fetches) has finished.
+// handler (metadata fetches) has finished.
 func (s *Server) WaitBackgroundForTest() {
 	s.bg.Wait()
 }

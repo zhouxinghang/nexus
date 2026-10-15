@@ -64,22 +64,7 @@ func (f *FakeHost) List(dir string) ([]FileInfo, error) {
 }
 
 func (f *FakeHost) Walk(root string) ([]FileInfo, error) {
-	var out []FileInfo
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		out = append(out, toFileInfo(path, fi))
-		return nil
-	})
-	return out, err
+	return walkFiles(root)
 }
 
 func (f *FakeHost) ListWithinRoot(root, path string) ([]FileInfo, error) {

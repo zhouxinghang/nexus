@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"nexus/internal/db/dbgen"
+	"nexus/internal/host"
 )
 
 func (s *Server) registerFileRoutes(r chi.Router) {
@@ -72,18 +73,19 @@ type rootResponse struct {
 }
 
 type resourceResponse struct {
-	ID         int64      `json:"id"`
-	RootID     int64      `json:"root_id"`
-	Path       string     `json:"path"`
-	Name       string     `json:"name"`
-	Size       int64      `json:"size"`
-	IsDir      bool       `json:"is_dir"`
-	ModifiedAt *time.Time `json:"modified_at"`
-	State      string     `json:"state"`
-	Kind       string     `json:"kind"`
-	Tags       []string   `json:"tags"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID            int64      `json:"id"`
+	RootID        int64      `json:"root_id"`
+	Path          string     `json:"path"`
+	Name          string     `json:"name"`
+	Size          int64      `json:"size"`
+	IsDir         bool       `json:"is_dir"`
+	ModifiedAt    *time.Time `json:"modified_at"`
+	FileCreatedAt *time.Time `json:"file_created_at"`
+	State         string     `json:"state"`
+	Kind          string     `json:"kind"`
+	Tags          []string   `json:"tags"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // toResourceResponses converts a page of Resources, loading every row's tags
@@ -121,18 +123,19 @@ func newResourceResponse(res dbgen.Resource, tags []string) resourceResponse {
 		tags = []string{}
 	}
 	return resourceResponse{
-		ID:         res.ID,
-		RootID:     res.RootID,
-		Path:       res.Path,
-		Name:       res.Name,
-		Size:       res.Size,
-		IsDir:      res.IsDir,
-		ModifiedAt: res.ModifiedAt,
-		State:      string(res.State),
-		Kind:       res.Kind,
-		Tags:       tags,
-		CreatedAt:  res.CreatedAt,
-		UpdatedAt:  res.UpdatedAt,
+		ID:            res.ID,
+		RootID:        res.RootID,
+		Path:          res.Path,
+		Name:          res.Name,
+		Size:          res.Size,
+		IsDir:         res.IsDir,
+		ModifiedAt:    res.ModifiedAt,
+		FileCreatedAt: res.FileCreatedAt,
+		State:         string(res.State),
+		Kind:          res.Kind,
+		Tags:          tags,
+		CreatedAt:     res.CreatedAt,
+		UpdatedAt:     res.UpdatedAt,
 	}
 }
 
@@ -277,7 +280,7 @@ func (s *Server) writeResourcePage(w http.ResponseWriter, r *http.Request, rootI
 	if sortBy == "" {
 		sortBy = "path" // Preserve the existing recursive API's default.
 	}
-	if sortBy != "path" && sortBy != "name" && sortBy != "size" && sortBy != "modified" {
+	if sortBy != "path" && sortBy != "name" && sortBy != "size" && sortBy != "modified" && sortBy != "created" {
 		writeError(w, http.StatusBadRequest, "invalid sort")
 		return
 	}
@@ -435,6 +438,10 @@ func (s *Server) handleRegisterResource(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "path is not inside any Managed Root")
 		return
 	}
+	if host.IsIgnoredPath(root.Path, p) {
+		writeError(w, http.StatusBadRequest, "dot-prefixed files and directories are ignored")
+		return
+	}
 	fi, err := s.host.Stat(p)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "file does not exist")
@@ -442,12 +449,13 @@ func (s *Server) handleRegisterResource(w http.ResponseWriter, r *http.Request) 
 	}
 	mod := fi.ModifiedAt
 	res, err := s.queries.UpsertResource(r.Context(), dbgen.UpsertResourceParams{
-		RootID:     root.ID,
-		Path:       p,
-		Name:       fi.Name,
-		Size:       fi.Size,
-		IsDir:      fi.IsDir,
-		ModifiedAt: &mod,
+		RootID:        root.ID,
+		Path:          p,
+		Name:          fi.Name,
+		Size:          fi.Size,
+		IsDir:         fi.IsDir,
+		ModifiedAt:    &mod,
+		FileCreatedAt: fi.CreatedAt,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not register resource")

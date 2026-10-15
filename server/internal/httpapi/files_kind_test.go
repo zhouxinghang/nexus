@@ -8,7 +8,7 @@ import (
 )
 
 // A sampling of the Files taxonomy: name -> expected server-classified kind.
-// Covers directory, extension, extension-less code names, dotfiles, and the
+// Covers extension, extension-less code names, and the
 // multi-dot archive case, all of which the resource_kind SQL function handles.
 var kindFixtures = map[string]string{
 	"report.PDF":       "document",
@@ -20,7 +20,6 @@ var kindFixtures = map[string]string{
 	"main.go":          "code",
 	"Dockerfile":       "code",
 	"bundle.tar.gz":    "archive",
-	".env":             "other",
 	"README":           "other",
 	"weird.unknownext": "other",
 }

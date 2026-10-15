@@ -65,6 +65,7 @@ func toFileInfo(path string, fi os.FileInfo) FileInfo {
 		Size:       fi.Size(),
 		IsDir:      fi.IsDir(),
 		ModifiedAt: fi.ModTime(),
+		CreatedAt:  fileCreationTime(path, fi),
 	}
 }
 
@@ -93,22 +94,7 @@ func (h *RealHost) List(dir string) ([]FileInfo, error) {
 }
 
 func (h *RealHost) Walk(root string) ([]FileInfo, error) {
-	var out []FileInfo
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
-		}
-		if d.IsDir() {
-			return nil
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return nil // vanished between the walk and the stat
-		}
-		out = append(out, toFileInfo(path, fi))
-		return nil
-	})
-	return out, err
+	return walkFiles(root)
 }
 
 func (h *RealHost) ListWithinRoot(root, path string) ([]FileInfo, error) {
